@@ -3,6 +3,10 @@
 # Diese Datei ist für Feinarbeiten: Suchmuster, Kategorien, Dateinamen, Feldnamen in Ninox.
 # Nach Änderungen in der App auf "Konfiguration neu laden" klicken.
 #
+# version: wird bei neuen Programmversionen hochgezählt; eine ältere Datei im Benutzerprofil wird dann
+# gesichert und durch diese ersetzt. Eigene Änderungen bitte danach übertragen.
+version = 2
+#
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
 #   Datum:       "Datum: 03. Dezember 2025"
@@ -115,32 +119,90 @@ kopf    = ['^\s*Bescheid\s+f[üu]e?r\s', 'Bewilligungsbescheid']
 hinweis = ['bewillige\s+ich', 'Bewilligung']
 
 # --------------------------------------------------------------------------- Ninox
+# Aufbau wie in eurer Ninox-Datenbank:
+#   Bewohner*in  →  Antrag (neuester)  →  Bescheid  →  Bewilligungsabschnitte (eine Zeile je Zeitraum)
+#                                                   →  Dokument (mit der PDF)
+# Tabellen werden über ihren NAMEN gefunden. In der App zeigt "Verbindung testen" alle Tabellen und Felder
+# und meldet, wenn ein Name hier nicht passt.
+
 [ninox.bewohner]
-# Tabelle mit den Bewohner*innen – Namen wie in Ninox angezeigt
 tabelle           = 'Bewohner*innen'
 feld_kundennummer = 'BA-Kundennummer'
-# Geburtsdatum-Feld (Datumsfeld). Leer lassen (''), wenn es keins gibt.
-# Wenn gesetzt: zweiter Suchschlüssel, falls die Kundennummer unleserlich ist, und Gegenprobe
-# (Kundennummer gefunden, aber Geburtsdatum im Bescheid passt nicht → "Prüfen").
+# Datumsfeld mit dem Geburtsdatum ('' = keins). Zweiter Suchschlüssel + Gegenprobe zur Kundennummer.
 feld_geburtsdatum = 'Geburtsdatum'
-# Ninox-Ausdruck für den Namensteil im Dateinamen
+# Ninox-Ausdruck für den Namen (Dateiname, Protokoll)
 name_ausdruck     = 'Nachname + "_" + Vorname'
 
-[ninox.dokumente]
-# Tabelle, in der pro Bescheid ein Datensatz entsteht (ID aus "Verbindung testen", z. B. "B")
-tabelle_id = 'B'
+[ninox.antrag]
+# Der Bescheid wird an den NEUESTEN Antrag der Person gehängt.
+# tabelle = '' → Bescheid hängt direkt an der Person (dann bescheid.feld_eltern = Verknüpfung zur Person).
+tabelle       = 'Anträge'
+feld_bewohner = 'Bewohner*in'
 
-[ninox.dokumente.felder]
-# links: interner Wert, rechts: Feldname in Ninox. Leer lassen ('') = nicht setzen.
-bewohner      = 'Bewohner*in'      # Verknüpfungsfeld zur Bewohner*innen-Tabelle
-kategorie     = 'Kategorie'        # Auswahlfeld
-bescheiddatum = 'Bescheiddatum'
-zeitraum_von  = 'Bewilligt von'
-zeitraum_bis  = 'Bewilligt bis'
-betrag        = 'BAB monatlich'    # Zahl – Betrag der letzten Tabellenzeile (aktueller Satz)
-zeitraeume    = ''                 # Textfeld, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
-geburtsdatum  = ''
-kundennummer  = ''
-hinweise      = ''                 # Textfeld für Auffälligkeiten bei der Erkennung
-dateiname     = 'Dateiname'
-datei         = 'Bescheid'         # Datei-/Bildfeld; '' = PDF nur als Anhang am Datensatz
+[ninox.bescheid]
+tabelle     = 'Bescheide'
+feld_eltern = 'Antrag'                       # Verknüpfung Bescheid → Antrag
+[ninox.bescheid.felder]
+datum  = 'Datum des Bescheides'
+status = 'Status'
+
+[ninox.abschnitte]
+tabelle     = 'Bewilligungsabschnitte'
+feld_eltern = 'Bescheid'
+[ninox.abschnitte.felder]
+beginn     = 'Beginn'
+ende       = 'Ende'
+betrag     = 'Bewilligtes BAB'
+kostensatz = 'Kostensatz'
+# EA inkl. VP, VP, ZZB, Wertminderung trägt weiterhin ihr ein bzw. berechnet Ninox.
+
+# Kostensatz je Abschnitt: der neueste, der zum Beginn schon gilt ("name" = Auswahlwert in Ninox)
+[[ninox.kostensaetze]]
+name = 'B-PB 01/25 (ab 01.01.2025)'
+ab   = '2025-01-01'
+[[ninox.kostensaetze]]
+name = 'B-PB 01/26 (ab 01.01.2026)'
+ab   = '2026-01-01'
+
+[ninox.dokument]
+tabelle     = 'Dokumente'
+feld_eltern = 'Bescheid'                     # Bescheide IMMER am Bescheid ablegen, nicht am Antrag
+kategorie_wert     = 'Bescheid'              # Wert für "Dokumentkategorie"
+erstellt_von_wert  = ''                      # z. B. 'BAB Berlin Prenzlauer-Berg' ('' = nicht setzen)
+bringer_wert       = ''                      # 'Azubi' oder 'Eltern' ('' = nicht setzen)
+# Platzhalter: {dokumentart} {monat} {jahr} {jahr2} {datum} {kategorie}  → z. B. "BAB Bescheid 10/25"
+beschreibung = '{dokumentart} {monat}/{jahr2}'
+[ninox.dokument.felder]
+datum        = 'Datum'                       # bekommt das heutige Datum
+kategorie    = 'Dokumentkategorie'
+art          = 'Dokumentart'
+beschreibung = 'Beschreibung'
+erstellt_von = 'Erstellt von'
+bringer      = 'Dokumentenbringer'
+hinweise     = ''                            # optional: Textfeld für Erkennungs-Hinweise
+datei        = 'Datei'                       # Datei-Feld; '' = PDF nur als Anhang am Datensatz
+
+# Was je erkannter Art angelegt wird.
+# status/dokumentart = Auswahlwerte in Ninox. aktion = 'manuell' → nicht automatisch, sondern "Prüfen".
+[ninox.zuordnung.Bewilligung]
+dokumentart = 'BAB Bescheid'
+status      = 'bewilligt'
+
+[ninox.zuordnung."Änderung"]
+dokumentart = 'BAB Änderungsbescheid'
+status      = 'bewilligt'
+
+[ninox.zuordnung.Ablehnung]
+dokumentart = 'BAB Bescheid'
+status      = 'abgelehnt'
+abschnitte  = false
+
+[ninox.zuordnung.Aufhebung]
+dokumentart = 'BAB Änderungsbescheid'
+status      = 'noch zu prüfen'
+
+[ninox.zuordnung."Anhörung"]
+aktion = 'manuell'
+
+[ninox.zuordnung.Mitwirkung]
+aktion = 'manuell'

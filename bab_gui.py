@@ -128,6 +128,8 @@ class App(tk.Tk):
         self.after(200, self._queue_abholen)
         self.protocol("WM_DELETE_WINDOW", self._beenden)
 
+        if self.k.migriert:
+            self.after(300, lambda: messagebox.showinfo("Regeldatei aktualisiert", self.k.migriert))
         if self.k.einstellungen["ueberwachung"].get("beim_start_starten"):
             self.after(800, self.start)
         if minimiert:
@@ -384,6 +386,11 @@ class App(tk.Tk):
         aus.append(f"\nPflichtfelder fehlen: {', '.join(fehlend)}" if fehlend else "\nAlle Pflichtfelder erkannt ✔")
         if mit_ki:
             aus += ["", "MIT KI ERGÄNZT", "-" * 40] + [f"{k:15} {v or '–'}" for k, v in asdict(mit_ki).items()]
+            e = mit_ki
+        try:
+            aus += ["", "WÜRDE IN NINOX ANGELEGT", "-" * 40, kern.plan_text(kern.ablage_plan(self.k.cfg, e, "(Dateiname)"))]
+        except Exception as ex:
+            aus += ["", f"Ninox-Zuordnung fehlerhaft (config.toml prüfen): {ex}"]
         aus += ["", "=" * 70, "ERKANNTER TEXT", "=" * 70, text]
         self.txt_analyse.insert("1.0", "\n".join(aus))
 

@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -102,9 +102,34 @@ class Konfiguration:
         self.ordner = ordner or daten_ordner()
         self.toml_pfad = self.ordner / "config.toml"
         self.json_pfad = self.ordner / "einstellungen.json"
+        self.migriert: str | None = None  # Meldung, falls die Regeldatei ersetzt wurde
+        standard = ressourcen_ordner() / "config_standard.toml"
         if not self.toml_pfad.exists():
-            shutil.copy2(ressourcen_ordner() / "config_standard.toml", self.toml_pfad)
+            shutil.copy2(standard, self.toml_pfad)
+        else:
+            self._regeldatei_aktualisieren(standard)
         self.laden()
+
+    def _regeldatei_aktualisieren(self, standard: Path) -> None:
+        """Neue Programmversion mit neuem Regel-Aufbau: alte Datei sichern, neue übernehmen."""
+        try:
+            with open(standard, "rb") as fh:
+                neu = tomllib.load(fh).get("version", 0)
+            try:
+                with open(self.toml_pfad, "rb") as fh:
+                    alt = tomllib.load(fh).get("version", 0)
+            except Exception:
+                alt = -1  # unlesbar -> ersetzen
+            if alt >= neu:
+                return
+            sicherung = self.toml_pfad.with_name(f"config.alt-{datetime.now():%Y%m%d-%H%M%S}.toml")
+            shutil.move(self.toml_pfad, sicherung)
+            shutil.copy2(standard, self.toml_pfad)
+            self.migriert = (f"Die Regeldatei wurde auf Version {neu} aktualisiert. Deine bisherige Datei liegt gesichert unter\n"
+                             f"{sicherung}\n\nFalls du darin Ninox-Feldnamen oder Muster geändert hattest, bitte in die neue "
+                             f"config.toml übertragen (Einstellungen → Regeldatei bearbeiten).")
+        except Exception as ex:
+            self.migriert = f"Regeldatei konnte nicht geprüft werden: {ex}"
 
     def laden(self) -> None:
         with open(self.toml_pfad, "rb") as fh:
@@ -135,6 +160,7 @@ class Ergebnis:
     zeitraum_bis: str | None = None
     betrag: str | None = None  # "1.234,56" – Betrag der letzten (aktuellen) Tabellenzeile
     geburtsdatum: str | None = None  # ISO
+    abschnitte: list = field(default_factory=list)  # [[von_iso, bis_iso, "1.234,56"], ...]
     zeitraeume: str = ""  # alle Tabellenzeilen, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
     hinweise: str = ""  # Auffälligkeiten bei der Erkennung
     quelle: str = "regeln"
@@ -317,7 +343,7 @@ def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
     for stufe, bereich in (("kopf", text), ("hinweis", text[: cfg["regeln"].get("kategorie_suchbereich_zeichen", 6000)])):
         beste: tuple[int, int, str] | None = None
         for rang, kat in enumerate(cfg["kategorien"]):
-            for muster in kat.get(stufe, []):
+            for muster in kat.get(stufe, kat.get("muster", []) if stufe == "kopf" else []):
                 m = re.search(muster, bereich, re.IGNORECASE | re.MULTILINE)
                 if m and (beste is None or (m.start(), rang) < beste[:2]):
                     beste = (m.start(), rang, kat["name"])
@@ -336,7 +362,7 @@ def alle(muster_liste: list[str], text: str, flags=re.IGNORECASE) -> list[re.Mat
 def tabelle_lesen(text: str, cfg: dict) -> list[tuple[str, str, str]]:
     """Zeilen der Tabelle 'von bis mtl. Betrag': [(von, bis, betrag), ...] in Dokumentreihenfolge, ohne Dubletten."""
     zeilen, gesehen = [], set()
-    for m in alle(cfg["muster"]["tabellenzeile"], text, re.IGNORECASE | re.MULTILINE):
+    for m in alle(cfg["muster"].get("tabellenzeile", []), text, re.IGNORECASE | re.MULTILINE):
         von, bis = datum_iso(m.group(1)), datum_iso(m.group(2))
         if not (von and bis and von <= bis):
             continue
@@ -353,8 +379,9 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     hinweise = []
 
     # Kundennummer: beschriftete Fundstellen zählen 3-fach, Barcode/Freitext 1-fach; bei Gleichstand -> unsicher
-    kandidaten = [(re.sub(r"\s", "", m.group(1)).upper(), 3) for m in alle(m_cfg["kundennummer_beschriftet"], text)]
-    kandidaten += [(re.sub(r"\s", "", m.group(1)).upper(), 1) for m in alle(m_cfg["kundennummer_frei"], text, 0)]
+    kandidaten = [(re.sub(r"\s", "", m.group(1)).upper(), 3)
+                  for m in alle(m_cfg.get("kundennummer_beschriftet", m_cfg.get("kundennummer", [])), text)]
+    kandidaten += [(re.sub(r"\s", "", m.group(1)).upper(), 1) for m in alle(m_cfg.get("kundennummer_frei", []), text, 0)]
     kandidaten = [(k, g) for k, g in kandidaten if KDNR_FORMAT.match(k)]
     wert, eindeutig = mehrheit(kandidaten)
     verschiedene = sorted({k for k, _ in kandidaten})
@@ -366,8 +393,8 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
         hinweise.append("Kundennummer nicht eindeutig: " + ", ".join(verschiedene))
 
     # Bescheiddatum: 'Datum: 03. Dezember 2025' (3-fach) vor 'Bescheid vom 03.12.2025' (1-fach, mehrfach im Dokument)
-    kandidaten = [(d, 3) for m in alle(m_cfg["bescheiddatum"], text) if (d := datum_iso(m.group(1)))]
-    kandidaten += [(d, 1) for m in alle(m_cfg["bescheiddatum_fallback"], text) if (d := datum_iso(m.group(1)))]
+    kandidaten = [(d, 3) for m in alle(m_cfg.get("bescheiddatum", []), text) if (d := datum_iso(m.group(1)))]
+    kandidaten += [(d, 1) for m in alle(m_cfg.get("bescheiddatum_fallback", []), text) if (d := datum_iso(m.group(1)))]
     wert, eindeutig = mehrheit(kandidaten)
     if wert and eindeutig:
         e.bescheiddatum = wert
@@ -375,7 +402,7 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
         hinweise.append("Bescheiddatum nicht eindeutig: " + ", ".join(sorted({d for d, _ in kandidaten})))
 
     # Geburtsdatum
-    m = erstes(m_cfg["geburtsdatum"], text)
+    m = erstes(m_cfg.get("geburtsdatum", []), text)
     if m:
         e.geburtsdatum = datum_iso(m.group(1))
 
@@ -383,12 +410,13 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     zeilen = tabelle_lesen(text, cfg)
     if zeilen:
         e.zeitraum_von, e.zeitraum_bis, e.betrag = zeilen[0][0], zeilen[-1][1], zeilen[-1][2]
+        e.abschnitte = [list(z) for z in zeilen]
         e.zeitraeume = " | ".join(f"{iso_zu_de(v)}–{iso_zu_de(b)}: {bt}" for v, b, bt in zeilen)
     else:
-        m = erstes(m_cfg["zeitraum"], text)
+        m = erstes(m_cfg.get("zeitraum", []), text)
         if m:
             e.zeitraum_von, e.zeitraum_bis = datum_iso(m.group(1)), datum_iso(m.group(2))
-        m = erstes(m_cfg["betrag"], text)
+        m = erstes(m_cfg.get("betrag", []), text)
         if m:
             e.betrag = m.group(1)
 
@@ -467,6 +495,63 @@ def ki_testen(cfg: dict) -> str:
 
 # =========================================================================== Ninox
 
+def kostensatz_waehlen(cfg: dict, beginn: str | None) -> str | None:
+    """Neuester Kostensatz, der zum Beginn des Abschnitts schon gilt."""
+    if not beginn:
+        return None
+    beste = None
+    for k in sorted(cfg["ninox"].get("kostensaetze", []), key=lambda k: k["ab"]):
+        if k["ab"] <= beginn:
+            beste = k["name"]
+    return beste
+
+
+def ablage_plan(cfg: dict, e: "Ergebnis", dateiname: str, heute: str | None = None) -> dict:
+    """Was in Ninox angelegt wird – ohne Verbindung. Wird für Ablage, Testlauf und Analyse genutzt."""
+    n = cfg["ninox"]
+    z = n.get("zuordnung", {}).get(e.kategorie or "", {})
+    if not z or z.get("aktion") == "manuell":
+        return {"aktion": "manuell", "grund": f"{e.kategorie or 'Unbekannte Art'}: keine automatische Ablage vorgesehen"}
+    heute = heute or datetime.now().strftime("%Y-%m-%d")
+
+    fb = n["bescheid"]["felder"]
+    bescheid = {fb.get("datum"): e.bescheiddatum, fb.get("status"): z.get("status")}
+
+    fa = n["abschnitte"]["felder"]
+    zeilen = e.abschnitte or ([[e.zeitraum_von, e.zeitraum_bis, e.betrag]] if e.zeitraum_von and e.zeitraum_bis else [])
+    abschnitte = []
+    if z.get("abschnitte", True):
+        for von, bis, betrag in zeilen:
+            abschnitte.append({fa.get("beginn"): von, fa.get("ende"): bis,
+                               fa.get("betrag"): betrag_zahl(betrag) if betrag else None,
+                               fa.get("kostensatz"): kostensatz_waehlen(cfg, von)})
+
+    d = n["dokument"]
+    fd = d["felder"]
+    jahr, monat = (e.bescheiddatum or heute)[:4], (e.bescheiddatum or heute)[5:7]
+    beschreibung = d.get("beschreibung", "{dokumentart} {monat}/{jahr2}").format(
+        dokumentart=z.get("dokumentart", ""), kategorie=e.kategorie, monat=monat, jahr=jahr, jahr2=jahr[2:],
+        datum=iso_zu_de(e.bescheiddatum))
+    dokument = {fd.get("datum"): heute, fd.get("kategorie"): d.get("kategorie_wert", "Bescheid"),
+                fd.get("art"): z.get("dokumentart"), fd.get("beschreibung"): beschreibung,
+                fd.get("erstellt_von"): d.get("erstellt_von_wert") or None,
+                fd.get("bringer"): d.get("bringer_wert") or None, fd.get("hinweise"): e.hinweise or None}
+
+    ohne_leere = lambda f: {k: v for k, v in f.items() if k and v not in (None, "")}  # noqa: E731
+    return {"aktion": "anlegen", "bescheid": ohne_leere(bescheid), "abschnitte": [ohne_leere(a) for a in abschnitte],
+            "dokument": ohne_leere(dokument), "dateiname": dateiname}
+
+
+def plan_text(plan: dict) -> str:
+    if plan["aktion"] != "anlegen":
+        return f"Keine automatische Ablage: {plan['grund']}"
+    zeilen = ["Bescheid:"] + [f"    {k}: {v}" for k, v in plan["bescheid"].items()]
+    for i, a in enumerate(plan["abschnitte"], 1):
+        zeilen += [f"  Abschnitt {i}: " + ", ".join(f"{k}={v}" for k, v in a.items())]
+    zeilen += ["Dokument:"] + [f"    {k}: {v}" for k, v in plan["dokument"].items()]
+    return "\n".join(zeilen)
+
+
 class Ninox:
     def __init__(self, cfg: dict):
         n = cfg["ninox"]
@@ -475,31 +560,73 @@ class Ninox:
         self.basis = f'{self.wurzel}/teams/{n["team_id"]}/databases/{n["datenbank_id"]}'
         self.s = requests.Session()
         self.s.headers["Authorization"] = f'Bearer {n["api_schluessel"]}'
+        self._tabellen: list[dict] | None = None
+
+    # ---------------------------------------------------------------- Schema
+    def tabellen(self) -> list[dict]:
+        if self._tabellen is None:
+            r = self.s.get(f"{self.basis}/tables", timeout=20)
+            r.raise_for_status()
+            self._tabellen = r.json()
+        return self._tabellen
+
+    def tabelle(self, name: str) -> dict:
+        for t in self.tabellen():
+            if t.get("name") == name or t.get("id") == name:
+                return t
+        raise RuntimeError(f"Tabelle „{name}“ gibt es in Ninox nicht. Vorhanden: "
+                           + ", ".join(t.get("name", "") for t in self.tabellen()))
+
+    def schema_pruefen(self) -> list[str]:
+        """Prüft, ob alle konfigurierten Tabellen und Felder existieren. Liefert Problem-Liste."""
+        n, probleme = self.cfg, []
+        pruefliste = [
+            (n["bewohner"]["tabelle"], [n["bewohner"].get("feld_kundennummer"), n["bewohner"].get("feld_geburtsdatum")]),
+            (n["bescheid"]["tabelle"], [n["bescheid"].get("feld_eltern"), *n["bescheid"]["felder"].values()]),
+            (n["abschnitte"]["tabelle"], [n["abschnitte"].get("feld_eltern"), *n["abschnitte"]["felder"].values()]),
+            (n["dokument"]["tabelle"], [n["dokument"].get("feld_eltern"), *n["dokument"]["felder"].values()]),
+        ]
+        if n.get("antrag", {}).get("tabelle"):
+            pruefliste.insert(1, (n["antrag"]["tabelle"], [n["antrag"].get("feld_bewohner")]))
+        for tab, felder in pruefliste:
+            try:
+                t = self.tabelle(tab)
+            except RuntimeError as ex:
+                probleme.append(str(ex))
+                continue
+            vorhanden = {f.get("name") for f in t.get("fields", [])}
+            for f in felder:
+                if f and f not in vorhanden:
+                    probleme.append(f"Feld „{f}“ fehlt in Tabelle „{tab}“")
+        return probleme
 
     def verbindung_testen(self) -> str:
-        """Hilft beim Einrichten: listet Teams, Datenbanken oder Tabellen samt IDs."""
         n = self.cfg
         if not n.get("team_id"):
             r = self.s.get(f"{self.wurzel}/teams", timeout=20); r.raise_for_status()
-            return "Verbindung ok. Teams:\n" + "\n".join(f'  {t["id"]}  {t["name"]}' for t in r.json())
+            return "Verbindung ok. Teams (ID eintragen):\n" + "\n".join(f'  {t["id"]}  {t["name"]}' for t in r.json())
         if not n.get("datenbank_id"):
             r = self.s.get(f'{self.wurzel}/teams/{n["team_id"]}/databases', timeout=20); r.raise_for_status()
-            return "Verbindung ok. Datenbanken:\n" + "\n".join(f'  {d["id"]}  {d["name"]}' for d in r.json())
-        r = self.s.get(f"{self.basis}/tables", timeout=20); r.raise_for_status()
-        zeilen = []
-        for t in r.json():
-            felder = ", ".join(f.get("name", "") for f in t.get("fields", []))
-            zeilen.append(f'  {t["id"]}  {t["name"]}  [{felder}]')
-        return "Verbindung ok. Tabellen (ID, Name, Felder):\n" + "\n".join(zeilen)
+            return "Verbindung ok. Datenbanken (ID eintragen):\n" + "\n".join(f'  {d["id"]}  {d["name"]}' for d in r.json())
+        zeilen = ["Verbindung ok.", ""]
+        probleme = self.schema_pruefen()
+        zeilen += (["PROBLEME mit der Regeldatei (config.toml):"] + [f"  ✗ {p}" for p in probleme]
+                   if probleme else ["✔ Alle Tabellen und Felder aus der Regeldatei sind vorhanden."])
+        zeilen += ["", "Tabellen und Felder in Ninox:"]
+        for t in self.tabellen():
+            zeilen.append(f'  [{t["id"]}] {t["name"]}')
+            for f in t.get("fields", []):
+                zeilen.append(f'        {f.get("name")}  ({f.get("type", "")})')
+        return "\n".join(zeilen)
 
+    # ---------------------------------------------------------------- Abfragen
     def _query(self, skript: str):
         r = self.s.post(f"{self.basis}/query", json={"query": skript}, timeout=30)
         r.raise_for_status()
         return r.json()
 
     def bewohner_finden(self, kundennummer: str | None = None, geburtsdatum: str | None = None) -> list[dict]:
-        """Sucht über die Kundennummer oder (Fallback) über das Geburtsdatum (ISO).
-        Liefert [{id, name, kundennummer, geburtsdatum}] – die letzten beiden nur, wenn das Feld konfiguriert ist."""
+        """Sucht über die Kundennummer oder (Fallback) über das Geburtsdatum (ISO)."""
         b = self.cfg["bewohner"]
         f_kdnr, f_geb = b["feld_kundennummer"], b.get("feld_geburtsdatum") or ""
         if kundennummer:
@@ -520,28 +647,76 @@ class Ninox:
                                 "geburtsdatum": geb.strip()})
         return treffer
 
-    def dokument_anlegen(self, bewohner_id: int, e: Ergebnis, pdf: Path, dateiname: str) -> int:
-        d = self.cfg["dokumente"]
-        f = d["felder"]
-        werte = {
-            "bewohner": bewohner_id, "kategorie": e.kategorie, "bescheiddatum": e.bescheiddatum,
-            "zeitraum_von": e.zeitraum_von, "zeitraum_bis": e.zeitraum_bis,
-            "betrag": betrag_zahl(e.betrag) if e.betrag else None,
-            "kundennummer": e.kundennummer, "dateiname": dateiname,
-            "geburtsdatum": e.geburtsdatum, "zeitraeume": e.zeitraeume or None, "hinweise": e.hinweise or None,
-        }
-        fields = {f[k]: v for k, v in werte.items() if f.get(k) and v is not None}
-        tab = f'{self.basis}/tables/{d["tabelle_id"]}/records'
-        r = self.s.post(tab, json=[{"fields": fields}], timeout=30)
-        r.raise_for_status()
-        rid = r.json()[0]["id"]
-        with open(pdf, "rb") as fh:
-            r = self.s.post(f"{tab}/{rid}/files", files={"file": (dateiname, fh, "application/pdf")}, timeout=120)
-        r.raise_for_status()
-        if f.get("datei"):
-            r = self.s.post(tab, json=[{"id": rid, "fields": {f["datei"]: dateiname}}], timeout=30)
-            r.raise_for_status()
+    def eltern_finden(self, bewohner_id: int) -> int:
+        """Datensatz, an den der Bescheid gehängt wird: neuester Antrag der Person – oder die Person selbst."""
+        a = self.cfg.get("antrag", {})
+        if not a.get("tabelle"):
+            return bewohner_id
+        antwort = self._query(f"max((select '{a['tabelle']}' where number('{a['feld_bewohner']}') = {bewohner_id}).number(Id))")
+        try:
+            rid = int(float(antwort))
+        except (TypeError, ValueError):
+            rid = 0
+        if rid <= 0:
+            raise PruefFall("für diese Person gibt es in Ninox keinen Antrag – bitte erst den Antrag anlegen")
         return rid
+
+    def bescheid_vorhanden(self, eltern_id: int, datum: str) -> bool:
+        b = self.cfg["bescheid"]
+        j, m, t = datum.split("-")
+        antwort = self._query(f"cnt(select '{b['tabelle']}' where number('{b['feld_eltern']}') = {eltern_id} "
+                              f"and '{b['felder']['datum']}' = date({int(j)}, {int(m)}, {int(t)}))")
+        try:
+            return int(float(antwort)) > 0
+        except (TypeError, ValueError):
+            return False
+
+    # ---------------------------------------------------------------- Schreiben
+    def _anlegen(self, tabelle: str, fields: dict) -> int:
+        tid = self.tabelle(tabelle)["id"]
+        r = self.s.post(f"{self.basis}/tables/{tid}/records", json=[{"fields": fields}], timeout=30)
+        r.raise_for_status()
+        return r.json()[0]["id"]
+
+    def _loeschen(self, tabelle: str, rid: int) -> None:
+        try:
+            tid = self.tabelle(tabelle)["id"]
+            self.s.delete(f"{self.basis}/tables/{tid}/records/{rid}", timeout=30)
+        except Exception:
+            log.warning("Konnte Datensatz %s in %s nicht zurücknehmen – bitte in Ninox prüfen", rid, tabelle)
+
+    def ablegen(self, bewohner_id: int, plan: dict, pdf: Path) -> int:
+        """Legt Bescheid, Abschnitte und Dokument an und lädt die PDF hoch. Bei Fehlern wird zurückgenommen."""
+        n = self.cfg
+        eltern_id = self.eltern_finden(bewohner_id)
+        datum = plan["bescheid"].get(n["bescheid"]["felder"]["datum"])
+        if datum and self.bescheid_vorhanden(eltern_id, datum):
+            raise PruefFall(f"Ein Bescheid vom {iso_zu_de(datum)} ist bei dieser Person in Ninox schon vorhanden")
+
+        angelegt: list[tuple[str, int]] = []
+        try:
+            bid = self._anlegen(n["bescheid"]["tabelle"], {n["bescheid"]["feld_eltern"]: eltern_id, **plan["bescheid"]})
+            angelegt.append((n["bescheid"]["tabelle"], bid))
+            for a in plan["abschnitte"]:
+                aid = self._anlegen(n["abschnitte"]["tabelle"], {n["abschnitte"]["feld_eltern"]: bid, **a})
+                angelegt.append((n["abschnitte"]["tabelle"], aid))
+            d = n["dokument"]
+            did = self._anlegen(d["tabelle"], {d["feld_eltern"]: bid, **plan["dokument"]})
+            angelegt.append((d["tabelle"], did))
+            tid = self.tabelle(d["tabelle"])["id"]
+            with open(pdf, "rb") as fh:
+                r = self.s.post(f"{self.basis}/tables/{tid}/records/{did}/files",
+                                files={"file": (plan["dateiname"], fh, "application/pdf")}, timeout=120)
+            r.raise_for_status()
+            if d["felder"].get("datei"):
+                r = self.s.post(f"{self.basis}/tables/{tid}/records",
+                                json=[{"id": did, "fields": {d["felder"]["datei"]: plan["dateiname"]}}], timeout=30)
+                r.raise_for_status()
+            return bid
+        except Exception:
+            for tabelle, rid in reversed(angelegt):
+                self._loeschen(tabelle, rid)
+            raise
 
 
 # =========================================================================== Verarbeitung
@@ -593,6 +768,8 @@ class Verarbeitung:
                 e = ki_ergaenzen(text, e, self.cfg)
             erkanntes_geburtsdatum = e.geburtsdatum
             if vorgaben:
+                if any(vorgaben.get(f) and vorgaben.get(f) != getattr(e, f) for f in ("zeitraum_von", "zeitraum_bis", "betrag")):
+                    e.abschnitte = []
                 for k, v in vorgaben.items():
                     if k in FELDER and v:
                         setattr(e, k, v)
@@ -633,9 +810,14 @@ class Verarbeitung:
             if not dateiname.lower().endswith(".pdf"):
                 dateiname += ".pdf"
 
+            plan = ablage_plan(self.cfg, e, dateiname)
+            if plan["aktion"] != "anlegen":
+                raise PruefFall(plan["grund"] + " – bitte manuell in Ninox ablegen")
             if self.ninox:
-                rid = self.ninox.dokument_anlegen(bewohner_id, e, ocr_pdf, dateiname)
-                log.info("In Ninox abgelegt (Datensatz %s)", rid)
+                rid = self.ninox.ablegen(bewohner_id, plan, ocr_pdf)
+                log.info("In Ninox abgelegt (Bescheid-Datensatz %s)", rid)
+            else:
+                log.info("Testlauf – würde in Ninox anlegen:\n%s", plan_text(plan))
 
             ziel = eindeutiger_pfad(self.verarbeitet / dateiname)
             shutil.move(ocr_pdf, ziel)
