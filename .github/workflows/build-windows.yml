@@ -1,12 +1,15 @@
 # Baut BAB-Eingang.exe in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
 # Repository anlegen, alle Dateien hochladen, unter "Actions" den Lauf starten.
-# Das fertige ZIP liegt danach beim Lauf unter "Artifacts".
+# Jeder Push auf main erzeugt automatisch ein Release mit fertigem ZIP (Seite "Releases").
 name: Windows-Build
 
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -51,3 +54,12 @@ jobs:
         with:
           name: BAB-Eingang-Windows
           path: dist/BAB-Eingang
+
+      - name: Release mit ZIP anlegen
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist\BAB-Eingang -DestinationPath BAB-Eingang-Windows.zip
+          gh release create "v1.0.${{ github.run_number }}" BAB-Eingang-Windows.zip --target "${{ github.sha }}" --title "BAB-Eingang 1.0.${{ github.run_number }}" --notes "ZIP herunterladen, entpacken, BAB-Eingang.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."
