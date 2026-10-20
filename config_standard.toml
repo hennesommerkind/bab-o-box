@@ -1,0 +1,98 @@
+# BAB-Eingang – Regeln und Ninox-Felder
+# Ordner, Ninox-Zugang, KI und OCR stellst du in der App unter "Einstellungen" ein.
+# Diese Datei ist für Feinarbeiten: Suchmuster, Kategorien, Dateinamen, Feldnamen in Ninox.
+# Nach Änderungen in der App auf "Konfiguration neu laden" klicken.
+
+[ocr]
+dpi = 300
+jpeg_qualitaet = 80
+timeout_s = 300
+
+[ki]
+max_zeichen = 6000
+timeout_s = 180
+
+[ueberwachung]
+stabil_warten_s = 3
+
+[regeln]
+# Ohne diese Felder geht ein Dokument nach "pruefen"
+pflichtfelder = ['kundennummer', 'kategorie', 'bescheiddatum']
+kategorie_suchbereich_zeichen = 3000   # nur Briefkopf/Betreff durchsuchen, nicht die Rechtsbehelfsbelehrung
+
+[dateiname]
+# Platzhalter: {name} {kategorie} {datum} {kundennummer} {von} {bis}
+schema = '{name}_BAB-{kategorie}_{datum}.pdf'
+
+# --------------------------------------------------------------------------- Suchmuster
+# Werden der Reihe nach probiert; Gruppe 1 (bzw. 1 und 2 beim Zeitraum) ist der Wert.
+# Unbedingt mit echten Bescheiden über  --analyse  prüfen und anpassen.
+[muster]
+kundennummer = [
+  '(?i:Kunden-?\s*nummer|Kd\.?-?\s*Nr\.?)\s*:?\s*(\d{3}\s?[A-Z]\s?\d{6})',
+  '\b(\d{3}[A-Z]\d{6})\b',
+]
+bescheiddatum = [
+  'Datum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+  '[A-ZÄÖÜ][a-zäöüß\-]+,\s*(?:den\s*)?(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+zeitraum = [
+  '(?:für\s+die\s+Zeit\s+)?vom\s*(\d{1,2}\.\d{1,2}\.\d{4})\s*bis\s*(?:zum\s*)?(\d{1,2}\.\d{1,2}\.\d{4})',
+  '(\d{1,2}\.\d{1,2}\.\d{4})\s*[-–]\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+betrag = [
+  '(?:monatlich|mtl\.|in\s+H[öo]e?he\s+von)[^\d]{0,40}?(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:EUR|€)',
+  'Berufsausbildungsbeihilfe[^\d]{0,60}?(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:EUR|€)',
+]
+
+# --------------------------------------------------------------------------- Kategorien
+# Es gewinnt das Stichwort, das am weitesten oben im Brief steht (Betreff).
+# Bei gleicher Stelle entscheidet die Reihenfolge hier.
+# "name" muss exakt dem Auswahlwert in Ninox entsprechen.
+[[kategorien]]
+name   = 'Anhörung'
+muster = ['Anh[öo]e?rung']
+
+[[kategorien]]
+name   = 'Mitwirkung'
+muster = ['Mitwirkung', 'fehlende\s+Unterlagen', 'reichen\s+Sie\s+.{0,40}\s+ein', 'Unterlagen\s+nach']
+
+[[kategorien]]
+name   = 'Aufhebung'
+muster = ['Aufhebungs', 'Erstattungsbescheid', 'hebe\s.{0,80}\sauf']
+
+[[kategorien]]
+name   = 'Änderung'
+muster = ['[ÄA]e?nderungsbescheid', '[ÄA]e?nderung\s+der\s+Bewilligung']
+
+[[kategorien]]
+name   = 'Ablehnung'
+muster = ['Ablehnung', 'lehne\s.{0,80}\sab', 'abgelehnt']
+
+[[kategorien]]
+name   = 'Bewilligung'
+muster = ['Bewilligung', 'bewillige', 'bewilligt']
+
+# --------------------------------------------------------------------------- Ninox
+[ninox.bewohner]
+# Tabelle mit den Bewohner*innen – Namen wie in Ninox angezeigt
+tabelle           = 'Bewohner*innen'
+feld_kundennummer = 'BA-Kundennummer'
+# Ninox-Ausdruck für den Namensteil im Dateinamen
+name_ausdruck     = 'Nachname + "_" + Vorname'
+
+[ninox.dokumente]
+# Tabelle, in der pro Bescheid ein Datensatz entsteht (ID aus der API, z. B. "B")
+tabelle_id = 'B'
+
+[ninox.dokumente.felder]
+# links: interner Wert, rechts: Feldname in Ninox. Leer lassen ('') = nicht setzen.
+bewohner      = 'Bewohner*in'      # Verknüpfungsfeld zur Bewohner*innen-Tabelle
+kategorie     = 'Kategorie'        # Auswahlfeld
+bescheiddatum = 'Bescheiddatum'
+zeitraum_von  = 'Bewilligt von'
+zeitraum_bis  = 'Bewilligt bis'
+betrag        = 'BAB monatlich'
+kundennummer  = ''
+dateiname     = 'Dateiname'
+datei         = 'Bescheid'         # Datei-/Bildfeld; '' = PDF nur als Anhang am Datensatz

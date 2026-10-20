@@ -1,0 +1,65 @@
+# Baut BAB-Eingang.exe in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
+# Repository anlegen, alle Dateien hochladen, unter "Actions" den Lauf starten.
+# Das fertige ZIP liegt danach beim Lauf unter "Artifacts".
+name: Windows-Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python-Pakete
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Tesseract installieren
+        run: choco install tesseract -y --no-progress
+
+      - name: Deutsches Sprachpaket
+        shell: pwsh
+        run: |
+          $td = "C:\Program Files\Tesseract-OCR\tessdata"
+          Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/deu.traineddata" -OutFile "$td\deu.traineddata"
+
+      - name: Programm bauen
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name "BAB-Eingang"
+          --add-data "config_standard.toml;."
+          --collect-all pypdfium2 --collect-all pypdfium2_raw
+          bab_gui.py
+
+      - name: Tesseract beilegen
+        shell: pwsh
+        run: |
+          $src = "C:\Program Files\Tesseract-OCR"
+          $dst = "dist\BAB-Eingang\tesseract"
+          robocopy $src $dst /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP
+          foreach ($l in "deu","eng","osd") { if (Test-Path "$src\tessdata\$l.traineddata") { Copy-Item "$src\tessdata\$l.traineddata" "$dst\tessdata\" } }
+          Copy-Item LIESMICH_ANWENDER.md dist\BAB-Eingang\
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BAB-Eingang-Windows
+          path: dist/BAB-Eingang
+
+      - name: Release mit ZIP anlegen
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist\BAB-Eingang -DestinationPath BAB-Eingang-Windows.zip
+          gh release create "${{ github.ref_name }}" BAB-Eingang-Windows.zip --title "BAB-Eingang ${{ github.ref_name }}" --notes "ZIP herunterladen, entpacken, BAB-Eingang.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."
