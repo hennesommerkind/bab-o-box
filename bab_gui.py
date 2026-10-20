@@ -271,7 +271,8 @@ class App(tk.Tk):
         self._kategorien_setzen()
 
     def _kategorien_setzen(self):
-        self.cmb_kat.configure(values=[k["name"] for k in self.k.cfg.get("kategorien", [])])
+        self.cmb_kat.configure(values=[k["name"] for k in self.k.cfg.get("kategorien", [])]
+                               + [u["name"] for u in self.k.cfg.get("unterarten", [])])
 
     def _pruefen_aktualisieren(self):
         self.tree_p.delete(*self.tree_p.get_children())

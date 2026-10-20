@@ -5,7 +5,7 @@
 #
 # version: wird bei neuen Programmversionen hochgezählt; eine ältere Datei im Benutzerprofil wird dann
 # gesichert und durch diese ersetzt. Eigene Änderungen bitte danach übertragen.
-version = 2
+version = 3
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -34,6 +34,9 @@ pflichtfelder = ['kategorie', 'bescheiddatum']
 kategorie_suchbereich_zeichen = 6000
 # Fehlt dieses Wort im ganzen Dokument, kommt ein Hinweis ins Protokoll (kein Stopp)
 erforderliches_stichwort = 'Berufsausbildungsbeihilfe|BAB'
+# Änderungsbescheid ohne erkannten Grund, dessen Abschnitt genau am Stichtag eines neuen Kostensatzes beginnt
+# (s. ninox.kostensaetze) → nach "Prüfen", weil es vermutlich ein Änderungsbescheid TS ist. [] = abschalten
+verdacht_ts_bei = ['Änderung']
 
 [dateiname]
 # Platzhalter: {name} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
@@ -118,6 +121,31 @@ name    = 'Bewilligung'
 kopf    = ['^\s*Bescheid\s+f[üu]e?r\s', 'Bewilligungsbescheid']
 hinweis = ['bewillige\s+ich', 'Bewilligung']
 
+# --------------------------------------------------------------------------- Unterarten
+# Verfeinern eine erkannte Kategorie ("basis") anhand des Begründungstextes. Passen zwei → "Prüfen".
+# ACHTUNG: "BAföG", "Freibetrag", "Unterbringung", "Wohnheim" stehen in JEDEM Bescheid als Standardtext –
+# nur eindeutige Formulierungen verwenden. Mit "Analyse" an echten Bescheiden prüfen.
+# (BAf.G: OCR liest "BAföG" oft als "BAf6G"/"BAfSG".)
+[[unterarten]]
+basis  = 'Änderung'
+name   = 'Änderung BAföG'
+muster = [
+  'BAf.G-?\s*[ÄA]e?nderungsgesetz',
+  '\d+\.\s*Gesetz\s+zur\s+[ÄA]e?nderung\s+des\s+Bundesausbildungsf',
+  'Gesetz\s+zur\s+[ÄA]e?nderung\s+des\s+Bundesausbildungsf',
+  '(?:Anhebung|Erh[öo]e?hung|Anpassung|[ÄA]e?nderung)\s+der\s+(?:Freibetr[äa]e?ge|Bedarfss[äa]e?tze|Einkommensfreibetr)',
+  'ge[äa]e?nderte[nr]?\s+(?:Freibetr[äa]e?ge|Bedarfss[äa]e?tze)',
+]
+
+[[unterarten]]
+basis  = 'Änderung'
+name   = 'Änderung TS'
+muster = [
+  'Tagess[äa]e?tze?s?',
+  '(?:ge[äa]e?nderte[nrs]?|neue[nrs]?|erh[öo]e?hte[nrs]?|Erh[öo]e?hung\s+de[rs]|Anpassung\s+de[rs]|[ÄA]e?nderung\s+de[rs])\s+(?:Kostens[äa]e?tze?s?|Unterbringungskosten|Kosten\s+(?:der|f[üu]e?r\s+die)\s+Unterbringung|Entgelte?s?|Heimkosten|Internatskosten)',
+  '(?:neue|ge[äa]e?nderte)\s+(?:Entgelt|Leistungs)vereinbarung',
+]
+
 # --------------------------------------------------------------------------- Ninox
 # Aufbau wie in eurer Ninox-Datenbank:
 #   Bewohner*in  →  Antrag (neuester)  →  Bescheid  →  Bewilligungsabschnitte (eine Zeile je Zeitraum)
@@ -190,6 +218,14 @@ status      = 'bewilligt'
 
 [ninox.zuordnung."Änderung"]
 dokumentart = 'BAB Änderungsbescheid'
+status      = 'bewilligt'
+
+[ninox.zuordnung."Änderung BAföG"]
+dokumentart = 'BAB Änderungsbescheid Bafög'
+status      = 'bewilligt'
+
+[ninox.zuordnung."Änderung TS"]
+dokumentart = 'BAB Änderungsbescheid TS'
 status      = 'bewilligt'
 
 [ninox.zuordnung.Ablehnung]

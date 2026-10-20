@@ -352,6 +352,24 @@ def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
     return None
 
 
+def unterart_bestimmen(text: str, cfg: dict, kategorie: str | None) -> tuple[str | None, str | None]:
+    """Verfeinert z. B. 'Änderung' zu 'Änderung BAföG' oder 'Änderung TS'. Passen mehrere -> Hinweis, keine Unterart."""
+    treffer = []
+    for u in cfg.get("unterarten", []):
+        if u.get("basis") != kategorie:
+            continue
+        for muster in u["muster"]:
+            m = re.search(muster, text, re.IGNORECASE)
+            if m:
+                treffer.append((u["name"], re.sub(r"\s+", " ", m.group(0))))
+                break
+    if len(treffer) == 1:
+        return treffer[0][0], None
+    if len(treffer) > 1:
+        return None, "Art nicht eindeutig: " + "; ".join(f"{n} („{w}“)" for n, w in treffer)
+    return None, None
+
+
 def alle(muster_liste: list[str], text: str, flags=re.IGNORECASE) -> list[re.Match]:
     treffer = []
     for muster in muster_liste:
@@ -421,6 +439,18 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
             e.betrag = m.group(1)
 
     e.kategorie = kategorie_bestimmen(text, cfg)
+    unterart, hinweis = unterart_bestimmen(text, cfg, e.kategorie)
+    if unterart:
+        e.kategorie = unterart
+    if hinweis:
+        hinweise.append(hinweis)
+    elif e.kategorie in cfg["regeln"].get("verdacht_ts_bei", []):
+        stichtage = {k["ab"]: k["name"] for k in cfg.get("ninox", {}).get("kostensaetze", [])}
+        for von, _, _ in (e.abschnitte or [[e.zeitraum_von, None, None]]):
+            if von in stichtage:
+                hinweise.append(f"Verdacht: Abschnitt beginnt am {iso_zu_de(von)}, dem Stichtag von „{stichtage[von]}“ "
+                                f"– evtl. Änderungsbescheid TS? Bitte Art prüfen")
+                break
 
     stichwort = cfg["regeln"].get("erforderliches_stichwort")
     if stichwort and not re.search(stichwort, text, re.IGNORECASE):
@@ -781,7 +811,7 @@ class Verarbeitung:
             geb_feld = self.cfg["ninox"]["bewohner"].get("feld_geburtsdatum")
             if not e.kundennummer and not (e.geburtsdatum and geb_feld):
                 raise PruefFall("Kundennummer nicht erkannt" + (f" ({e.hinweise})" if e.hinweise else ""))
-            if "nicht eindeutig" in e.hinweise and not vorgaben:
+            if ("nicht eindeutig" in e.hinweise or "Verdacht:" in e.hinweise) and not vorgaben:
                 raise PruefFall(e.hinweise)
 
             bewohner_id, name = None, e.kundennummer or f"geb-{e.geburtsdatum}"
