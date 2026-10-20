@@ -242,8 +242,9 @@ class App(tk.Tk):
         self.lbl_grund.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         self.p_vars: dict[str, tk.StringVar] = {}
-        felder = [("kundennummer", "Kundennummer"), ("kategorie", "Kategorie"), ("bescheiddatum", "Bescheiddatum"),
-                  ("zeitraum_von", "Bewilligt von"), ("zeitraum_bis", "Bewilligt bis"), ("betrag", "Betrag mtl. (€)")]
+        felder = [("kundennummer", "Kundennummer"), ("geburtsdatum", "Geburtsdatum"), ("kategorie", "Kategorie"),
+                  ("bescheiddatum", "Bescheiddatum"), ("zeitraum_von", "Bewilligt von"), ("zeitraum_bis", "Bewilligt bis"),
+                  ("betrag", "Betrag mtl. (€)")]
         for i, (key, text) in enumerate(felder, start=1):
             ttk.Label(rechts, text=text).grid(row=i, column=0, sticky="w", pady=3)
             var = tk.StringVar()
@@ -262,7 +263,8 @@ class App(tk.Tk):
         ttk.Button(knopf, text="✔ Mit diesen Angaben ablegen", command=self._pruefen_uebernehmen).pack(fill="x", pady=2)
         ttk.Button(knopf, text="Erneut automatisch versuchen", command=self._pruefen_erneut).pack(fill="x", pady=2)
         ttk.Label(rechts, text="Tipp: Fehlt die Kundennummer in Ninox, dort nachtragen und\n"
-                               "dann „Erneut automatisch versuchen“.", style="Hinweis.TLabel").grid(
+                               "dann „Erneut automatisch versuchen“. Ohne Kundennummer\n"
+                               "wird über das Geburtsdatum gesucht.", style="Hinweis.TLabel").grid(
             row=len(felder) + 3, column=0, columnspan=2, sticky="w", pady=(10, 0))
         self._kategorien_setzen()
 
@@ -298,7 +300,7 @@ class App(tk.Tk):
         erkannt = info.get("erkannt", {})
         for key, var in self.p_vars.items():
             wert = erkannt.get(key) or ""
-            var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis") else wert)
+            var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum") else wert)
 
     def _pruefen_pdf(self):
         pfad = self._pruefen_gewaehlt()
@@ -317,7 +319,7 @@ class App(tk.Tk):
                 return
         vorgaben["kundennummer"] = kdnr
         vorgaben["kategorie"] = w["kategorie"]
-        for key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis"):
+        for key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum"):
             if w[key]:
                 iso = kern.datum_iso(w[key])
                 if not iso:

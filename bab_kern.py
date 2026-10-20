@@ -35,7 +35,12 @@ from pypdf import PdfReader
 log = logging.getLogger("bab")
 
 APP_NAME = "BAB-Eingang"
-FELDER = ["kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag"]
+FELDER = ["kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag", "geburtsdatum"]
+MONATE = {"januar": 1, "februar": 2, "märz": 3, "marz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6, "juli": 7,
+          "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12}
+DATUM_RE = r"\d{1,2}\.\d{1,2}\.\d{4}"
+DATUM_LANG_RE = r"\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4}"
+BETRAG_RE = r"\d{1,3}(?:\.\d{3})*,\d{2}"
 KDNR_FORMAT = re.compile(r"^\d{3}[A-Z]\d{6}$")
 BETRAG_FORMAT = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2}$|^\d+,\d{2}$")
 OHNE_FENSTER = 0x08000000 if os.name == "nt" else 0  # keine Konsolenfenster für Tesseract
@@ -128,7 +133,10 @@ class Ergebnis:
     bescheiddatum: str | None = None  # ISO JJJJ-MM-TT
     zeitraum_von: str | None = None
     zeitraum_bis: str | None = None
-    betrag: str | None = None  # "1.234,56"
+    betrag: str | None = None  # "1.234,56" – Betrag der letzten (aktuellen) Tabellenzeile
+    geburtsdatum: str | None = None  # ISO
+    zeitraeume: str = ""  # alle Tabellenzeilen, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
+    hinweise: str = ""  # Auffälligkeiten bei der Erkennung
     quelle: str = "regeln"
 
     def fehlend(self, pflicht: list[str]) -> list[str]:
@@ -142,6 +150,7 @@ class PruefFall(Exception):
 # =========================================================================== Hilfsfunktionen
 
 def datum_iso(text: str | None) -> str | None:
+    """'03.12.2025', '2025-12-03' oder '03. Dezember 2025' -> '2025-12-03'; sonst None."""
     if not text:
         return None
     text = str(text).strip()
@@ -150,7 +159,26 @@ def datum_iso(text: str | None) -> str | None:
             return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
         except ValueError:
             pass
+    m = re.match(r"(\d{1,2})\.?\s*([A-Za-zäöüÄÖÜ]+)\s*(\d{4})$", text)
+    if m and m.group(2).lower() in MONATE:
+        try:
+            return datetime(int(m.group(3)), MONATE[m.group(2).lower()], int(m.group(1))).strftime("%Y-%m-%d")
+        except ValueError:
+            return None
     return None
+
+
+def mehrheit(kandidaten: list[tuple[str, int]]) -> tuple[str | None, bool]:
+    """Gewichtete Mehrheit. Liefert (Wert, eindeutig). Nicht eindeutig = die zwei besten liegen gleichauf."""
+    punkte: dict[str, int] = {}
+    for wert, gewicht in kandidaten:
+        punkte[wert] = punkte.get(wert, 0) + gewicht
+    if not punkte:
+        return None, True
+    rang = sorted(punkte.items(), key=lambda kv: -kv[1])
+    if len(rang) > 1 and rang[0][1] == rang[1][1]:
+        return rang[0][0], False
+    return rang[0][0], True
 
 
 def betrag_zahl(betrag: str) -> float:
@@ -223,9 +251,12 @@ def tesseract_umgebung(exe: str) -> dict:
 
 
 def hat_textebene(pfad: Path, min_zeichen: int = 30) -> bool:
+    """Textebene vorhanden, wenn die erste Seite und mindestens die Hälfte aller Seiten Text tragen
+    (leere Rückseiten sind normal)."""
     try:
         reader = PdfReader(str(pfad))
-        return all(len((s.extract_text() or "").strip()) >= min_zeichen for s in reader.pages)
+        laengen = [len((s.extract_text() or "").strip()) for s in reader.pages]
+        return bool(laengen) and laengen[0] >= min_zeichen and sum(l >= min_zeichen for l in laengen) * 2 >= len(laengen)
     except Exception:
         return False
 
@@ -280,34 +311,101 @@ def erstes(muster_liste: list[str], text: str, flags=re.IGNORECASE) -> re.Match 
 
 
 def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
-    """Das am weitesten oben stehende Stichwort (= Betreff) gewinnt; bei Gleichstand die Reihenfolge."""
-    bereich = text[: cfg["regeln"].get("kategorie_suchbereich_zeichen", 3000)]
-    beste: tuple[int, int, str] | None = None
-    for rang, kat in enumerate(cfg["kategorien"]):
-        for muster in kat["muster"]:
-            m = re.search(muster, bereich, re.IGNORECASE)
-            if m and (beste is None or (m.start(), rang) < beste[:2]):
-                beste = (m.start(), rang, kat["name"])
-    return beste[2] if beste else None
+    """Zwei Stufen: 'kopf'-Muster (Überschrift/Betreff) gewinnen immer, egal wo sie stehen –
+    Bescheide enthalten viel Standardtext ('Bewilligung', 'aufgehoben' …), der in jeder Art vorkommt.
+    Erst wenn kein Kopf-Muster passt, zählen die 'hinweis'-Muster, und dort das am weitesten oben stehende."""
+    for stufe, bereich in (("kopf", text), ("hinweis", text[: cfg["regeln"].get("kategorie_suchbereich_zeichen", 6000)])):
+        beste: tuple[int, int, str] | None = None
+        for rang, kat in enumerate(cfg["kategorien"]):
+            for muster in kat.get(stufe, []):
+                m = re.search(muster, bereich, re.IGNORECASE | re.MULTILINE)
+                if m and (beste is None or (m.start(), rang) < beste[:2]):
+                    beste = (m.start(), rang, kat["name"])
+        if beste:
+            return beste[2]
+    return None
+
+
+def alle(muster_liste: list[str], text: str, flags=re.IGNORECASE) -> list[re.Match]:
+    treffer = []
+    for muster in muster_liste:
+        treffer += list(re.finditer(muster, text, flags))
+    return treffer
+
+
+def tabelle_lesen(text: str, cfg: dict) -> list[tuple[str, str, str]]:
+    """Zeilen der Tabelle 'von bis mtl. Betrag': [(von, bis, betrag), ...] in Dokumentreihenfolge, ohne Dubletten."""
+    zeilen, gesehen = [], set()
+    for m in alle(cfg["muster"]["tabellenzeile"], text, re.IGNORECASE | re.MULTILINE):
+        von, bis = datum_iso(m.group(1)), datum_iso(m.group(2))
+        if not (von and bis and von <= bis):
+            continue
+        z = (von, bis, m.group(3))
+        if z not in gesehen:
+            gesehen.add(z)
+            zeilen.append(z)
+    return zeilen
 
 
 def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     m_cfg = cfg["muster"]
     e = Ergebnis()
-    m = erstes(m_cfg["kundennummer"], text, flags=0)
+    hinweise = []
+
+    # Kundennummer: beschriftete Fundstellen zählen 3-fach, Barcode/Freitext 1-fach; bei Gleichstand -> unsicher
+    kandidaten = [(re.sub(r"\s", "", m.group(1)).upper(), 3) for m in alle(m_cfg["kundennummer_beschriftet"], text)]
+    kandidaten += [(re.sub(r"\s", "", m.group(1)).upper(), 1) for m in alle(m_cfg["kundennummer_frei"], text, 0)]
+    kandidaten = [(k, g) for k, g in kandidaten if KDNR_FORMAT.match(k)]
+    wert, eindeutig = mehrheit(kandidaten)
+    verschiedene = sorted({k for k, _ in kandidaten})
+    if wert and eindeutig:
+        e.kundennummer = wert
+        if len(verschiedene) > 1:
+            hinweise.append("Kundennummer unterschiedlich gelesen: " + ", ".join(verschiedene) + f" – verwendet: {wert}")
+    elif wert:
+        hinweise.append("Kundennummer nicht eindeutig: " + ", ".join(verschiedene))
+
+    # Bescheiddatum: 'Datum: 03. Dezember 2025' (3-fach) vor 'Bescheid vom 03.12.2025' (1-fach, mehrfach im Dokument)
+    kandidaten = [(d, 3) for m in alle(m_cfg["bescheiddatum"], text) if (d := datum_iso(m.group(1)))]
+    kandidaten += [(d, 1) for m in alle(m_cfg["bescheiddatum_fallback"], text) if (d := datum_iso(m.group(1)))]
+    wert, eindeutig = mehrheit(kandidaten)
+    if wert and eindeutig:
+        e.bescheiddatum = wert
+    elif wert:
+        hinweise.append("Bescheiddatum nicht eindeutig: " + ", ".join(sorted({d for d, _ in kandidaten})))
+
+    # Geburtsdatum
+    m = erstes(m_cfg["geburtsdatum"], text)
     if m:
-        e.kundennummer = re.sub(r"\s", "", m.group(1)).upper()
-    m = erstes(m_cfg["bescheiddatum"], text)
-    if m:
-        e.bescheiddatum = datum_iso(m.group(1))
-    m = erstes(m_cfg["zeitraum"], text)
-    if m:
-        e.zeitraum_von, e.zeitraum_bis = datum_iso(m.group(1)), datum_iso(m.group(2))
-    m = erstes(m_cfg["betrag"], text)
-    if m:
-        e.betrag = m.group(1)
+        e.geburtsdatum = datum_iso(m.group(1))
+
+    # Zeitraum + Betrag: Tabelle 'von bis mtl. Betrag'; Betrag = letzte Zeile (aktueller Satz)
+    zeilen = tabelle_lesen(text, cfg)
+    if zeilen:
+        e.zeitraum_von, e.zeitraum_bis, e.betrag = zeilen[0][0], zeilen[-1][1], zeilen[-1][2]
+        e.zeitraeume = " | ".join(f"{iso_zu_de(v)}–{iso_zu_de(b)}: {bt}" for v, b, bt in zeilen)
+    else:
+        m = erstes(m_cfg["zeitraum"], text)
+        if m:
+            e.zeitraum_von, e.zeitraum_bis = datum_iso(m.group(1)), datum_iso(m.group(2))
+        m = erstes(m_cfg["betrag"], text)
+        if m:
+            e.betrag = m.group(1)
+
     e.kategorie = kategorie_bestimmen(text, cfg)
+
+    stichwort = cfg["regeln"].get("erforderliches_stichwort")
+    if stichwort and not re.search(stichwort, text, re.IGNORECASE):
+        hinweise.append("Stichwort für BAB-Bescheid nicht gefunden – ist das ein BAB-Dokument?")
+    e.hinweise = "; ".join(hinweise)
     return e
+
+
+def iso_zu_de(iso: str | None) -> str:
+    if not iso or len(iso) != 10:
+        return iso or ""
+    j, m, t = iso.split("-")
+    return f"{t}.{m}.{j}"
 
 
 # =========================================================================== Lokale KI (Ollama)
@@ -399,17 +497,27 @@ class Ninox:
         r.raise_for_status()
         return r.json()
 
-    def bewohner_finden(self, kundennummer: str) -> list[tuple[int, str]]:
+    def bewohner_finden(self, kundennummer: str | None = None, geburtsdatum: str | None = None) -> list[dict]:
+        """Sucht über die Kundennummer oder (Fallback) über das Geburtsdatum (ISO).
+        Liefert [{id, name, kundennummer, geburtsdatum}] – die letzten beiden nur, wenn das Feld konfiguriert ist."""
         b = self.cfg["bewohner"]
-        skript = (
-            f"join((select '{b['tabelle']}' where '{b['feld_kundennummer']}' = \"{kundennummer}\")"
-            f".(text(number(Id)) + \"|\" + {b['name_ausdruck']}), \"\\n\")"
-        )
+        f_kdnr, f_geb = b["feld_kundennummer"], b.get("feld_geburtsdatum") or ""
+        if kundennummer:
+            bedingung = f"'{f_kdnr}' = \"{kundennummer}\""
+        elif geburtsdatum and f_geb:
+            j, m, t = geburtsdatum.split("-")
+            bedingung = f"'{f_geb}' = date({int(j)}, {int(m)}, {int(t)})"
+        else:
+            return []
+        teile = ["text(number(Id))", b["name_ausdruck"], f"text('{f_kdnr}')",
+                 f"format('{f_geb}', \"YYYY-MM-DD\")" if f_geb else '""']
+        skript = f"join((select '{b['tabelle']}' where {bedingung}).(" + ' + "|" + '.join(teile) + "), \"\\n\")"
         treffer = []
         for zeile in str(self._query(skript) or "").splitlines():
-            if "|" in zeile:
-                rid, name = zeile.split("|", 1)
-                treffer.append((int(float(rid)), name))
+            if zeile.count("|") >= 3:
+                rid, name, kdnr, geb = zeile.split("|", 3)
+                treffer.append({"id": int(float(rid)), "name": name, "kundennummer": kdnr.strip().upper(),
+                                "geburtsdatum": geb.strip()})
         return treffer
 
     def dokument_anlegen(self, bewohner_id: int, e: Ergebnis, pdf: Path, dateiname: str) -> int:
@@ -420,6 +528,7 @@ class Ninox:
             "zeitraum_von": e.zeitraum_von, "zeitraum_bis": e.zeitraum_bis,
             "betrag": betrag_zahl(e.betrag) if e.betrag else None,
             "kundennummer": e.kundennummer, "dateiname": dateiname,
+            "geburtsdatum": e.geburtsdatum, "zeitraeume": e.zeitraeume or None, "hinweise": e.hinweise or None,
         }
         fields = {f[k]: v for k, v in werte.items() if f.get(k) and v is not None}
         tab = f'{self.basis}/tables/{d["tabelle_id"]}/records'
@@ -482,6 +591,7 @@ class Verarbeitung:
             pflicht = self.cfg["regeln"]["pflichtfelder"]
             if e.fehlend(pflicht) and self.cfg["ki"].get("aktiv", False) and not vorgaben:
                 e = ki_ergaenzen(text, e, self.cfg)
+            erkanntes_geburtsdatum = e.geburtsdatum
             if vorgaben:
                 for k, v in vorgaben.items():
                     if k in FELDER and v:
@@ -490,21 +600,36 @@ class Verarbeitung:
 
             fehlend = e.fehlend(pflicht)
             if fehlend:
-                raise PruefFall("nicht erkannt: " + ", ".join(fehlend))
+                raise PruefFall("nicht erkannt: " + ", ".join(fehlend) + (f" ({e.hinweise})" if e.hinweise else ""))
+            geb_feld = self.cfg["ninox"]["bewohner"].get("feld_geburtsdatum")
+            if not e.kundennummer and not (e.geburtsdatum and geb_feld):
+                raise PruefFall("Kundennummer nicht erkannt" + (f" ({e.hinweise})" if e.hinweise else ""))
+            if "nicht eindeutig" in e.hinweise and not vorgaben:
+                raise PruefFall(e.hinweise)
 
+            bewohner_id, name = None, e.kundennummer or f"geb-{e.geburtsdatum}"
             if self.ninox:
-                treffer = self.ninox.bewohner_finden(e.kundennummer)
+                treffer = self.ninox.bewohner_finden(e.kundennummer, e.geburtsdatum)
+                schluessel = f"Kundennummer {e.kundennummer}" if e.kundennummer else f"Geburtsdatum {iso_zu_de(e.geburtsdatum)}"
                 if not treffer:
-                    raise PruefFall(f"Kundennummer {e.kundennummer} in Ninox nicht gefunden")
+                    raise PruefFall(f"{schluessel} in Ninox nicht gefunden")
                 if len(treffer) > 1:
-                    raise PruefFall(f"Kundennummer {e.kundennummer} mehrfach in Ninox vorhanden")
-                bewohner_id, name = treffer[0]
-            else:
-                bewohner_id, name = None, e.kundennummer
+                    raise PruefFall(f"{schluessel} mehrfach in Ninox vorhanden")
+                t = treffer[0]
+                geburtsdatum_bestaetigt = bool(vorgaben) and vorgaben.get("geburtsdatum") not in (None, "", erkanntes_geburtsdatum)
+                if (e.kundennummer and e.geburtsdatum and t["geburtsdatum"] and t["geburtsdatum"] != e.geburtsdatum
+                        and not geburtsdatum_bestaetigt):
+                    raise PruefFall(f"Geburtsdatum im Bescheid ({iso_zu_de(e.geburtsdatum)}) passt nicht zu "
+                                    f"{t['name']} in Ninox ({iso_zu_de(t['geburtsdatum'])}) – Kundennummer falsch gelesen?")
+                if not e.kundennummer and t["kundennummer"]:
+                    e.kundennummer = t["kundennummer"]
+                    log.info("Kundennummer %s über Geburtsdatum aus Ninox übernommen", e.kundennummer)
+                bewohner_id, name = t["id"], t["name"]
 
             dateiname = sicherer_dateiname(self.cfg["dateiname"]["schema"].format(
                 name=name, kategorie=e.kategorie, datum=e.bescheiddatum or "ohne-Datum",
-                kundennummer=e.kundennummer, von=e.zeitraum_von or "", bis=e.zeitraum_bis or ""))
+                kundennummer=e.kundennummer or "ohne-Kdnr", geburtsdatum=e.geburtsdatum or "ohne-Geburtsdatum",
+                von=e.zeitraum_von or "", bis=e.zeitraum_bis or ""))
             if not dateiname.lower().endswith(".pdf"):
                 dateiname += ".pdf"
 
@@ -550,7 +675,8 @@ class Verarbeitung:
 
     def _protokoll(self, ein: str, aus: str, status: str, grund: str, e: Ergebnis) -> None:
         zeile = {"zeit": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eingang": ein, "ergebnis": aus,
-                 "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in FELDER}, "quelle": e.quelle}
+                 "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in FELDER},
+                 "zeitraeume": e.zeitraeume, "hinweise": e.hinweise, "quelle": e.quelle}
         neu = not self.protokoll.exists()
         with open(self.protokoll, "a", newline="", encoding="utf-8-sig") as fh:
             w = csv.DictWriter(fh, fieldnames=list(zeile), delimiter=";")

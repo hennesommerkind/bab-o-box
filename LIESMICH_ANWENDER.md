@@ -12,6 +12,7 @@ Copy the `BAB-Eingang` folder to your PC (e.g. `C:\Programme\BAB-Eingang` or a n
 4. Under "Allgemein", optionally enable **Mit Windows starten** and **Überwachung beim Programmstart automatisch starten**.
 
 The table and field names in Ninox (resident table, documents table, category field …) are set in the **rules file**: "Regeldatei bearbeiten (config.toml)", then "Konfiguration neu laden".
+Tip: if the resident table has a **Geburtsdatum** field, enter its name there. The app then also finds residents whose customer number is unreadable, and it checks that customer number and birth date match – this prevents a notice from being filed under the wrong person.
 
 ## Testing
 1. Tab **Analyse** → "PDF auswählen …" with a real notice. This shows what was recognized. Nothing is changed.
@@ -21,7 +22,7 @@ The table and field names in Ninox (resident table, documents table, category fi
 ## Day-to-day
 - Just scan. The app picks up new PDFs from the input folder on its own.
 - **Übersicht** shows everything that was processed. Double-clicking a row opens the PDF.
-- **Prüfen (n)**: notices that weren't recognized clearly. Select one, check or correct the fields on the right, then **Mit diesen Angaben ablegen**.
+- **Prüfen (n)**: notices that weren't recognized clearly. Select one, check or correct the fields on the right, then **Mit diesen Angaben ablegen**. The reason tells you what's missing – e.g. "Kundennummer nicht eindeutig: 022P425485, 022P426485" means the number was read in two different ways; look it up in the PDF and enter it.
   If the customer number was simply missing in Ninox, add it there and click **Erneut automatisch versuchen**.
 - Files in **Fehler** have a technical problem (e.g. no network). Once it's fixed, move them back into the input folder.
 
