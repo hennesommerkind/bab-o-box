@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 10
+version = 11
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -373,3 +373,16 @@ aktion = 'manuell'
 
 [ninox.zuordnung.Anforderungsschreiben]
 aktion = 'manuell'
+
+# --------------------------------------------------------------------------- Beschreibung (Light, zum Kopieren)
+# Ausgeschriebene Art für das Feld „Beschreibung“, z. B. „BAB Änderungsbescheid 12/25“
+[beschreibung_art]
+Bewilligung           = 'Bewilligungsbescheid'
+"Änderung"            = 'Änderungsbescheid'
+"Änderung BAföG"      = 'Änderungsbescheid BAföG'
+"Änderung TS"         = 'Änderungsbescheid TS'
+Ablehnung             = 'Ablehnungsbescheid'
+Aufhebung             = 'Aufhebungsbescheid'
+"Anhörung"            = 'Anhörung'
+Mitwirkung            = 'Mitwirkungsaufforderung'
+Anforderungsschreiben = 'Anforderungsschreiben'

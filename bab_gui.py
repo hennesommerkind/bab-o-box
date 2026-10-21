@@ -182,9 +182,83 @@ def text_fenster(eltern, titel: str, inhalt: str) -> None:
     ttk.Button(w, text="Schließen", command=w.destroy).pack(pady=(0, 8))
 
 
+class Kalender(tk.Toplevel):
+    """Kleiner Datums-Wähler. Öffnet beim eingetragenen Datum bzw. heute; heute ist blau umrandet."""
+    MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+              "November", "Dezember"]
+
+    def __init__(self, eltern, var: tk.StringVar, anker):
+        super().__init__(eltern)
+        import datetime as dt
+        self.dt = dt
+        self.var = var
+        self.title("Datum wählen")
+        self.transient(eltern)
+        self.resizable(False, False)
+        self.heute = dt.date.today()
+        iso = kern.datum_iso(var.get()) if var.get().strip() else None
+        self.gewaehlt = dt.date.fromisoformat(iso) if iso else None
+        start = self.gewaehlt or self.heute
+        self.jahr, self.monat = start.year, start.month
+        innen = ttk.Frame(self, padding=6)
+        innen.pack()
+        kopf = ttk.Frame(innen)
+        kopf.pack(fill="x")
+        ttk.Button(kopf, text="◀", width=3, command=lambda: self._monat(-1)).pack(side="left")
+        self.lbl = ttk.Label(kopf, anchor="center", font=("Segoe UI", 10, "bold"))
+        self.lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(kopf, text="▶", width=3, command=lambda: self._monat(1)).pack(side="right")
+        self.tage = ttk.Frame(innen)
+        self.tage.pack(pady=4)
+        fuss = ttk.Frame(innen)
+        fuss.pack(fill="x")
+        ttk.Button(fuss, text=f"Heute ({self.heute:%d.%m.%Y})", command=lambda: self._waehlen(self.heute)).pack(side="left")
+        ttk.Button(fuss, text="Schließen", command=self.destroy).pack(side="right")
+        self._zeichnen()
+        self.update_idletasks()
+        x, y = anker.winfo_rootx(), anker.winfo_rooty() + anker.winfo_height()
+        x = min(x, self.winfo_screenwidth() - self.winfo_reqwidth() - 10)
+        self.geometry(f"+{max(0, x - self.winfo_reqwidth() + anker.winfo_width())}+{y}")
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.focus_force()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _monat(self, schritt: int):
+        m = self.monat - 1 + schritt
+        self.jahr, self.monat = self.jahr + m // 12, m % 12 + 1
+        self._zeichnen()
+
+    def _waehlen(self, tag):
+        self.var.set(f"{tag:%d.%m.%Y}")
+        self.destroy()
+
+    def _zeichnen(self):
+        import calendar
+        for w in self.tage.winfo_children():
+            w.destroy()
+        self.lbl.configure(text=f"{self.MONATE[self.monat - 1]} {self.jahr}")
+        for i, t in enumerate(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]):
+            tk.Label(self.tage, text=t, width=3, fg="#666").grid(row=0, column=i)
+        for r, woche in enumerate(calendar.Calendar().monthdatescalendar(self.jahr, self.monat), start=1):
+            for c, tag in enumerate(woche):
+                andere = tag.month != self.monat
+                b = tk.Button(self.tage, text=str(tag.day), width=3, relief="flat", cursor="hand2",
+                              fg="#aaa" if andere else ("#b00020" if c >= 5 else "#000"),
+                              command=lambda d=tag: self._waehlen(d))
+                if tag == self.gewaehlt:
+                    b.configure(background="#1f6fb2", fg="white", activebackground="#1f6fb2")
+                elif tag == self.heute:
+                    b.configure(highlightthickness=2, highlightbackground="#1f6fb2", relief="solid", bd=1)
+                b.grid(row=r, column=c, padx=1, pady=1)
+
+
 class PdfVorschau(ttk.Frame):
-    """Seitenweise Vorschau eines PDFs (pypdfium2 + Pillow). Die Datei wird in den Speicher gelesen,
-    damit sie unter Windows nicht gesperrt ist und danach verschoben werden kann."""
+    """Vorschau eines PDFs: alle Seiten untereinander, Blättern mit ▲ ▼ oder dem Mausrad.
+    Die Datei wird in den Speicher gelesen, damit sie unter Windows nicht gesperrt ist und verschoben werden kann."""
+    MAX_SEITEN = 30
 
     def __init__(self, eltern):
         super().__init__(eltern)
@@ -192,28 +266,51 @@ class PdfVorschau(ttk.Frame):
         leiste.pack(fill="x")
         self.lbl = ttk.Label(leiste, text="Keine Vorschau", style="Hinweis.TLabel")
         self.lbl.pack(side="left")
-        for text, befehl in (("▶", lambda: self.blaettern(1)), ("◀", lambda: self.blaettern(-1)),
+        for text, befehl in (("▼", lambda: self.blaettern(1)), ("▲", lambda: self.blaettern(-1)),
                              ("+", lambda: self.zoomen(1.25)), ("−", lambda: self.zoomen(0.8)),
                              ("Breite", lambda: self.zoomen(None))):
             ttk.Button(leiste, text=text, width=6 if text == "Breite" else 3, command=befehl).pack(side="right", padx=1)
         rahmen = ttk.Frame(self)
         rahmen.pack(fill="both", expand=True, pady=(4, 0))
         self.canvas = tk.Canvas(rahmen, background="#8a8a8a", highlightthickness=0)
-        sy = ttk.Scrollbar(rahmen, orient="vertical", command=self.canvas.yview)
+        sy = ttk.Scrollbar(rahmen, orient="vertical", command=self._yview)
         sx = ttk.Scrollbar(rahmen, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        self.sy = sy
+        self.canvas.configure(yscrollcommand=self._yscroll, xscrollcommand=sx.set)
         sy.pack(side="right", fill="y")
         sx.pack(side="bottom", fill="x")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", self._groesse)
-        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 40), "units"))
         self.canvas.bind("<Button-4>", lambda _e: self.canvas.yview_scroll(-3, "units"))
         self.canvas.bind("<Button-5>", lambda _e: self.canvas.yview_scroll(3, "units"))
+        self.canvas.configure(yscrollincrement=20)
         self.doc = None
-        self.seite = 0
         self.zoom = None  # None = an Breite anpassen
-        self.bild = None
+        self.bilder: list = []
+        self.oben: list[int] = []  # y-Position jeder Seite
+        self.hoehe = 1
         self._nach = None
+
+    # Scrollen
+    def _yview(self, *args):
+        self.canvas.yview(*args)
+
+    def _yscroll(self, a, b):
+        self.sy.set(a, b)
+        self._seite_anzeigen()
+
+    def aktuelle_seite(self) -> int:
+        if not self.oben:
+            return 0
+        y = self.canvas.canvasy(0) + 30
+        return max(i for i, o in enumerate(self.oben) if o <= y) if any(o <= y for o in self.oben) else 0
+
+    def _seite_anzeigen(self):
+        if self.doc is not None and self.oben:
+            gesamt = len(self.doc)
+            extra = f" (die ersten {self.MAX_SEITEN} angezeigt)" if gesamt > self.MAX_SEITEN else ""
+            self.lbl.configure(text=f"Seite {self.aktuelle_seite() + 1} von {gesamt}{extra}")
 
     def laden(self, pfad: Path | None) -> None:
         self.leeren()
@@ -225,12 +322,13 @@ class PdfVorschau(ttk.Frame):
         except Exception as ex:
             self.lbl.configure(text=f"Vorschau nicht möglich: {ex}")
             return
-        self.seite, self.zoom = 0, None
+        self.zoom = None
         self.zeichnen()
+        self.canvas.yview_moveto(0)
 
     def leeren(self) -> None:
         self.canvas.delete("all")
-        self.bild = None
+        self.bilder, self.oben = [], []
         if self.doc is not None:
             try:
                 self.doc.close()
@@ -240,29 +338,36 @@ class PdfVorschau(ttk.Frame):
         self.lbl.configure(text="Keine Vorschau")
 
     def blaettern(self, schritt: int) -> None:
-        if self.doc is not None and 0 <= self.seite + schritt < len(self.doc):
-            self.seite += schritt
-            self.zeichnen()
-            self.canvas.yview_moveto(0)
+        if self.doc is None or not self.oben:
+            return
+        ziel = min(max(self.aktuelle_seite() + schritt, 0), len(self.oben) - 1)
+        self.canvas.yview_moveto(max(self.oben[ziel] - 4, 0) / self.hoehe)
+        self._seite_anzeigen()
 
     def zoomen(self, faktor: float | None) -> None:
         if self.doc is None:
             return
-        if faktor is None:
-            self.zoom = None
-        else:
-            self.zoom = (self.zoom or self._breiten_massstab()) * faktor
+        seite = self.aktuelle_seite()
+        self.zoom = None if faktor is None else (self.zoom or self._breiten_massstab()) * faktor
         self.zeichnen()
+        if self.oben:
+            self.canvas.yview_moveto(max(self.oben[seite] - 4, 0) / self.hoehe)
 
     def _breiten_massstab(self) -> float:
-        breite = max(self.canvas.winfo_width() - 8, 200)
-        return breite / self.doc[self.seite].get_width()
+        breite = max(self.canvas.winfo_width() - 12, 200)
+        return breite / self.doc[0].get_width()
 
     def _groesse(self, _evt=None) -> None:
         if self.doc is not None and self.zoom is None:
             if self._nach:
                 self.after_cancel(self._nach)
-            self._nach = self.after(150, self.zeichnen)
+            self._nach = self.after(200, self._neu_bei_groesse)
+
+    def _neu_bei_groesse(self):
+        seite = self.aktuelle_seite()
+        self.zeichnen()
+        if self.oben:
+            self.canvas.yview_moveto(max(self.oben[seite] - 4, 0) / self.hoehe)
 
     def zeichnen(self) -> None:
         self._nach = None
@@ -271,15 +376,22 @@ class PdfVorschau(ttk.Frame):
         try:
             from PIL import ImageTk
             massstab = min(self.zoom or self._breiten_massstab(), 6.0)
-            bild = self.doc[self.seite].render(scale=massstab).to_pil()
-            self.bild = ImageTk.PhotoImage(bild)
+            bilder = [ImageTk.PhotoImage(self.doc[i].render(scale=massstab).to_pil())
+                      for i in range(min(len(self.doc), self.MAX_SEITEN))]
         except Exception as ex:
             self.lbl.configure(text=f"Vorschau nicht möglich: {ex}")
             return
         self.canvas.delete("all")
-        self.canvas.create_image(4, 4, image=self.bild, anchor="nw")
-        self.canvas.configure(scrollregion=(0, 0, self.bild.width() + 8, self.bild.height() + 8))
-        self.lbl.configure(text=f"Seite {self.seite + 1} von {len(self.doc)}")
+        self.bilder, self.oben = bilder, []
+        y, breite = 6, 0
+        for b in bilder:
+            self.oben.append(y)
+            self.canvas.create_image(6, y, image=b, anchor="nw")
+            y += b.height() + 10
+            breite = max(breite, b.width())
+        self.hoehe = y
+        self.canvas.configure(scrollregion=(0, 0, breite + 12, y))
+        self._seite_anzeigen()
 
 
 # =========================================================================== Hauptfenster
@@ -609,6 +721,7 @@ class App(tk.Tk):
         kopf.pack(fill="x")
         ttk.Label(kopf, text="Zu prüfende Dokumente").pack(side="left")
         ttk.Button(kopf, text="Aktualisieren", command=self._pruefen_aktualisieren).pack(side="right")
+        ttk.Button(kopf, text="Alle neu erkennen", command=self._alle_neu_erkennen).pack(side="right", padx=4)
         rahmen = ttk.Frame(oben)
         rahmen.pack(fill="both", expand=True, pady=(6, 0))
         self.tree_p = ttk.Treeview(rahmen, columns=("datei", "grund"), show="headings", height=6)
@@ -628,54 +741,123 @@ class App(tk.Tk):
         links.add(self.vorschau, weight=3)
         aussen.add(links, weight=3)
 
-        rechts = ttk.LabelFrame(aussen, text="Angaben abgleichen und freigeben", padding=10)
-        aussen.add(rechts, weight=1)
-        self.lbl_grund = ttk.Label(rechts, text="Links ein Dokument auswählen.", wraplength=280, style="Hinweis.TLabel")
-        self.lbl_grund.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        rechts_aussen = ttk.Frame(aussen)
+        aussen.add(rechts_aussen, weight=1)
+        rechts = ttk.LabelFrame(rechts_aussen, text="Angaben abgleichen und freigeben", padding=10)
+        rechts.pack(fill="x")
+        self.lbl_grund = ttk.Label(rechts, text="Links ein Dokument auswählen.", wraplength=300, style="Hinweis.TLabel")
+        self.lbl_grund.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self.p_vars = {}
+        self.p_zusatz: dict = {}
         for i, key in enumerate(kern.FELDER_LIGHT, start=1):
             ttk.Label(rechts, text=kern.FELD_TITEL[key]).grid(row=i, column=0, sticky="w", pady=3, padx=(0, 6))
             var = tk.StringVar()
-            var.trace_add("write", lambda *_: self.var_geprueft.set(False))
+            var.trace_add("write", lambda *_: self._beschreibung_neu())
             self.p_vars[key] = var
             if key == "kategorie":
                 self.cmb_kat = ttk.Combobox(rechts, textvariable=var, state="readonly", width=26)
-                self.cmb_kat.grid(row=i, column=1, sticky="ew", pady=3)
+                self.cmb_kat.grid(row=i, column=1, columnspan=2, sticky="ew", pady=3)
             elif key == "haus":
                 self.cmb_haus = ttk.Combobox(rechts, textvariable=var, width=26)
-                self.cmb_haus.grid(row=i, column=1, sticky="ew", pady=3)
+                self.cmb_haus.grid(row=i, column=1, columnspan=2, sticky="ew", pady=3)
+            elif key == "bescheiddatum":
+                ttk.Entry(rechts, textvariable=var, width=22).grid(row=i, column=1, sticky="ew", pady=3)
+                knopf = ttk.Button(rechts, text="📅", width=3)
+                knopf.configure(command=lambda v=var, k=knopf: Kalender(self, v, k))
+                knopf.grid(row=i, column=2, sticky="e", padx=(4, 0))
             else:
-                ttk.Entry(rechts, textvariable=var, width=28).grid(row=i, column=1, sticky="ew", pady=3)
+                ttk.Entry(rechts, textvariable=var, width=28).grid(row=i, column=1, columnspan=2, sticky="ew", pady=3)
         n = len(kern.FELDER_LIGHT)
-        ttk.Label(rechts, text="Datum als TT.MM.JJJJ", style="Hinweis.TLabel").grid(row=n + 1, column=1, sticky="w")
-        self.var_geprueft = tk.BooleanVar(value=False)
-        self.cb_geprueft = ttk.Checkbutton(rechts, text="Ich habe alle Angaben mit dem Dokument verglichen",
-                                           variable=self.var_geprueft, command=self._freigabe_knopf)
-        self.cb_geprueft.grid(row=n + 2, column=0, columnspan=2, sticky="w", pady=(12, 4))
-        self.btn_frei = ttk.Button(rechts, text="✔ Freigeben (benennen und ablegen)", command=self._pruefen_freigeben)
-        self.btn_frei.grid(row=n + 3, column=0, columnspan=2, sticky="ew", pady=2)
+        ttk.Label(rechts, text="Beschreibung").grid(row=n + 1, column=0, sticky="w", pady=(10, 3))
+        self.var_beschr = tk.StringVar()
+        ttk.Entry(rechts, textvariable=self.var_beschr, width=22).grid(row=n + 1, column=1, sticky="ew", pady=(10, 3))
+        ttk.Button(rechts, text="📋", width=3, command=self._beschreibung_kopieren).grid(
+            row=n + 1, column=2, sticky="e", padx=(4, 0), pady=(10, 3))
+        self.lbl_kopiert = ttk.Label(rechts, text="Inhalt in Einstellungen wählbar · 📋 kopiert", style="Hinweis.TLabel")
+        self.lbl_kopiert.grid(row=n + 2, column=1, columnspan=2, sticky="w")
+        ttk.Button(rechts, text="✔ Freigeben (benennen und ablegen)", command=self._pruefen_freigeben).grid(
+            row=n + 3, column=0, columnspan=3, sticky="ew", pady=(12, 2))
         ttk.Button(rechts, text="Erneut erkennen", command=self._pruefen_erneut).grid(
-            row=n + 4, column=0, columnspan=2, sticky="ew", pady=2)
+            row=n + 4, column=0, columnspan=3, sticky="ew", pady=2)
         ttk.Button(rechts, text="PDF im PDF-Programm öffnen", command=self._pruefen_pdf).grid(
-            row=n + 5, column=0, columnspan=2, sticky="ew", pady=2)
-        ttk.Label(rechts, style="Hinweis.TLabel", wraplength=280, justify="left", text=(
-            "Die Vorschläge kommen aus der automatischen Erkennung und können falsch sein. "
-            "Bitte jede Angabe in der Vorschau nachsehen – erst dann freigeben. Freigegebene Dokumente liegen "
-            "benannt im Ordner „Verarbeitet“ und werden von dort in Ninox hochgeladen.")).grid(
-            row=n + 6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=n + 5, column=0, columnspan=3, sticky="ew", pady=2)
         rechts.columnconfigure(1, weight=1)
-        self._freigabe_knopf()
+
+        # dezent ausklappbar: was die ausführliche (Pro-)Erkennung noch gefunden hat
+        self.var_mehr = tk.BooleanVar(value=bool(self.k.einstellungen.get("weitere_infos_offen", False)))
+        self.btn_mehr = ttk.Label(rechts_aussen, cursor="hand2", style="Hinweis.TLabel")
+        self.btn_mehr.pack(anchor="w", pady=(10, 2))
+        self.btn_mehr.bind("<Button-1>", lambda _e: self._mehr_umschalten())
+        self.txt_mehr = tk.Text(rechts_aussen, height=12, width=40, wrap="word", font=("Segoe UI", 9), relief="flat",
+                                background=self.cget("background"), foreground="#555", state="disabled", cursor="arrow")
+        self.txt_mehr.tag_configure("feld", foreground="#888")
+        self._mehr_umschalten(nur_anzeigen=True)
         self._kategorien_setzen()
 
-    def _freigabe_knopf(self):
-        self.btn_frei.state(["!disabled"] if self.var_geprueft.get() else ["disabled"])
+    def _mehr_umschalten(self, nur_anzeigen: bool = False):
+        if not nur_anzeigen:
+            self.var_mehr.set(not self.var_mehr.get())
+            e = copy.deepcopy(self.k.einstellungen)
+            e["weitere_infos_offen"] = self.var_mehr.get()
+            try:
+                self.k.einstellungen = e
+                self.k.json_pfad.write_text(kern.json.dumps(e, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        offen = self.var_mehr.get()
+        self.btn_mehr.configure(text=("▾" if offen else "▸") + " Weitere Informationen aus der Erkennung")
+        if offen:
+            self.txt_mehr.pack(fill="both", expand=True)
+        else:
+            self.txt_mehr.pack_forget()
+
+    def _mehr_fuellen(self):
+        t = self.txt_mehr
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        z = self.p_zusatz
+        for key, titel in kern.ZUSATZ_FELDER.items():
+            wert = z.get(key)
+            if not wert:
+                continue
+            if key in ("antragsdatum", "zeitraum_von", "zeitraum_bis"):
+                wert = iso_zu_de(wert)
+            elif key in ("zeitraeume", "kostensatz_info"):
+                wert = str(wert).replace(" | ", "\n")
+            elif key == "hinweise":
+                wert = str(wert).replace("; ", "\n")
+            elif key == "betrag":
+                wert = f"{wert} €"
+            t.insert("end", titel + "\n", "feld")
+            t.insert("end", f"{wert}\n\n")
+        if not z:
+            t.insert("end", "Keine weiteren Angaben erkannt.", "feld")
+        t.configure(state="disabled")
+
+    def _beschreibung_neu(self):
+        if not hasattr(self, "var_beschr"):
+            return
+        werte = {k: v.get().strip() for k, v in self.p_vars.items()}
+        werte["bescheiddatum"] = kern.datum_iso(werte.get("bescheiddatum") or "") or ""
+        self.var_beschr.set(kern.beschreibung_bauen(werte, self.p_zusatz, self.k.cfg.get("beschreibung", {}),
+                                                    self.k.cfg.get("beschreibung_art", {})))
+
+    def _beschreibung_kopieren(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.var_beschr.get())
+        self.lbl_kopiert.configure(text=f"✔ kopiert: {self.var_beschr.get()}")
+
+    def _alle_neu_erkennen(self):
+        faelle = [p for p, _ in (self.v.pruef_faelle() if self.v else [])]
+        if not faelle:
+            return
+        self.vorschau.leeren()
+        self._hintergrund(lambda: [self.v.datei(p) for p in faelle], self._pruefen_fertig,
+                          f"Erkenne {len(faelle)} Dokumente neu …")
 
     def _pruefen_freigeben(self):
         pfad = self._pruefen_gewaehlt()
         if not pfad:
-            return
-        if not self.var_geprueft.get():
-            messagebox.showinfo("Freigeben", "Bitte erst alle Angaben mit dem Dokument vergleichen und das Häkchen setzen.")
             return
         w = {k: v.get().strip() for k, v in self.p_vars.items()}
         w["kundennummer"] = w["kundennummer"].replace(" ", "").upper()
@@ -694,7 +876,7 @@ class App(tk.Tk):
             if not messagebox.askyesno("Haus", f"„{w['haus']}“ steht nicht in der Häuserliste.\nTrotzdem verwenden?"):
                 return
         sel = self.tree_p.selection()
-        naechstes = self.tree_p.next(sel[0]) or self.tree_p.prev(sel[0]) if sel else None
+        naechstes = (self.tree_p.next(sel[0]) or self.tree_p.prev(sel[0])) if sel else None
         naechste_datei = self.pruef_pfade.get(naechstes) if naechstes else None
         self.vorschau.leeren()  # Datei freigeben, bevor sie verschoben wird
 
@@ -759,8 +941,10 @@ class App(tk.Tk):
             wert = erkannt.get(key) or ""
             var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum", "antragsdatum") else wert)
         if LIGHT:
-            self.var_geprueft.set(False)
-            self._freigabe_knopf()
+            self.p_zusatz = info.get("zusatz", {}) or {}
+            self._beschreibung_neu()
+            self._mehr_fuellen()
+            self.lbl_kopiert.configure(text="Inhalt in Einstellungen wählbar · 📋 kopiert")
             self.vorschau.laden(pfad)
 
     def _pruefen_pdf(self):
@@ -1010,12 +1194,38 @@ class App(tk.Tk):
         feld(r, 4, "Original-Archiv", ("ordner", "archiv_original"), wahl="ordner", hinweis="leer = Originale löschen")
 
         if LIGHT:
-            r = ttk.LabelFrame(f, text="Häuser (für Erkennung und Auswahlliste)", padding=8)
+            r = ttk.LabelFrame(f, text="Häuser und Kostensätze (CSV-Export aus Ninox)", padding=8)
             r.pack(fill="x", pady=4)
-            ttk.Button(r, text="Häuserliste laden (CSV-Export aus Ninox) …", command=self._haeuser_csv).grid(
-                row=0, column=0, sticky="w")
+            ttk.Button(r, text="Stammdaten laden …", command=self._stammdaten_csv).grid(row=0, column=0, sticky="w")
+            ttk.Label(r, text="nacheinander: Häuser (nötig), Kostensätze und Rechtslage (beide optional)",
+                      style="Hinweis.TLabel").grid(row=0, column=1, sticky="w", padx=8)
             self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700)
-            self.lbl_stamm.grid(row=1, column=0, sticky="w", pady=(4, 0))
+            self.lbl_stamm.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+            r = ttk.LabelFrame(f, text="Beschreibung zum Kopieren (z. B. für das Ninox-Feld „Beschreibung“)", padding=8)
+            r.pack(fill="x", pady=4)
+            feld(r, 0, "Vorsatz", ("beschreibung", "vorsatz"), hinweis="steht vorne, z. B. BAB")
+            teile = ttk.Frame(r)
+            teile.grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+            for i, (key, text) in enumerate([("art", "Art"), ("art_lang", "Art ausgeschrieben (Änderungsbescheid)"),
+                                             ("datum", "Bescheiddatum"), ("zeitraum", "Bewilligungszeitraum"),
+                                             ("haus", "Haus"), ("name", "Name"), ("kundennummer", "Kundennummer"),
+                                             ("betrag", "Betrag mtl.")]):
+                var = tk.BooleanVar(value=bool(e.get("beschreibung", {}).get(key)))
+                self.e_vars[("beschreibung", key)] = var
+                ttk.Checkbutton(teile, text=text, variable=var, command=self._beschreibung_beispiel).grid(
+                    row=i // 4, column=i % 4, sticky="w", padx=(0, 14), pady=2)
+            ttk.Label(r, text="Datumsformat").grid(row=2, column=0, sticky="w", pady=3)
+            var = tk.StringVar(value=e.get("beschreibung", {}).get("datumsformat", "MM/JJ"))
+            self.e_vars[("beschreibung", "datumsformat")] = var
+            cmb = ttk.Combobox(r, textvariable=var, state="readonly", width=14,
+                               values=["MM/JJ", "MM/JJJJ", "TT.MM.JJ", "TT.MM.JJJJ"])
+            cmb.grid(row=2, column=1, sticky="w", pady=3)
+            cmb.bind("<<ComboboxSelected>>", lambda _e: self._beschreibung_beispiel())
+            self.e_vars[("beschreibung", "vorsatz")].trace_add("write", lambda *_: self._beschreibung_beispiel())
+            self.lbl_beispiel = ttk.Label(r, style="Hinweis.TLabel")
+            self.lbl_beispiel.grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
+            self._beschreibung_beispiel()
         else:
             self._einstellungen_ninox(f, feld)
 
@@ -1059,6 +1269,8 @@ class App(tk.Tk):
         r = ttk.LabelFrame(f, text="Allgemein", padding=8)
         r.pack(fill="x", pady=4)
         feld(r, 0, "Prüfintervall (Sek.)", ("ueberwachung", "intervall_s"))
+        feld(r, 3, "Namen von Mitarbeitenden", ("mitarbeitende",),
+             hinweis="werden nie als Bewohner*in erkannt – Nachnamen mit Komma trennen")
         schalter(r, 1, "Überwachung beim Programmstart automatisch starten", ("ueberwachung", "beim_start_starten"))
         self.var_autostart = tk.BooleanVar(value=autostart_aktiv())
         cb = ttk.Checkbutton(r, text="Mit Windows starten (verkleinert)", variable=self.var_autostart)
@@ -1110,7 +1322,9 @@ class App(tk.Tk):
         if not st:
             return "Häuser: noch nicht geladen" if LIGHT else "Stammdaten: noch nicht geladen"
         if LIGHT:
-            return f"{len(st.get('haeuser', []))} Häuser geladen am {st.get('geladen', '?')}: " + ", ".join(self._haus_namen())
+            return (f"Stand {st.get('geladen', '?')}: {len(st.get('haeuser', []))} Häuser, "
+                    f"{len(st.get('kostensaetze', []))} Kostensätze, {len(st.get('rechtslage', []) or [])} Rechtslagen – "
+                    + ", ".join(self._haus_namen()))
         haeuser = ", ".join(h.get("kuerzel") or h.get("name") or "?" for h in st.get("haeuser", [])[:8])
         rl = st.get("rechtslage") or []
         neueste = max(rl, key=lambda r: r["ab"]) if rl else None
@@ -1147,16 +1361,17 @@ class App(tk.Tk):
 
     def _stammdaten_csv(self):
         """Ohne API: Ninox-Export der Häuser- und der Kostensatz-Tabelle (CSV, Semikolon) einlesen."""
-        haus = filedialog.askopenfilename(title="1/2: Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
+        haus = filedialog.askopenfilename(title="1/3: Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
         if not haus:
             return
-        ks = filedialog.askopenfilename(title="2/2: Kostensätze-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
-        if not ks:
+        ks = filedialog.askopenfilename(title="2/3: Kostensätze-Export (CSV) wählen" + (" – Abbrechen = überspringen" if LIGHT else ""),
+                                        filetypes=[("CSV", "*.csv")])
+        if not ks and not LIGHT:
             return
         rl = filedialog.askopenfilename(title="3/3 (optional): Rechtslage-Export (CSV) – Abbrechen = überspringen",
                                         filetypes=[("CSV", "*.csv")])
         try:
-            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks), self._formular_cfg(), self.k.ordner,
+            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks) if ks else None, self._formular_cfg(), self.k.ordner,
                                             Path(rl) if rl else None)
         except Exception as fehler:  # noqa: BLE001
             messagebox.showerror("Stammdaten", f"CSV konnte nicht gelesen werden:\n{fehler}")
@@ -1166,10 +1381,28 @@ class App(tk.Tk):
         self.lbl_stamm.configure(text=self._stammdaten_text())
         ohne_betrag = sum(1 for k in daten["kostensaetze"] if not k.get("betraege"))
         text = self._stammdaten_text()
+        if LIGHT:
+            offen = len(self.v.pruef_faelle()) if self.v else 0
+            if offen and messagebox.askyesno("Stammdaten", text + f"\n\n{offen} Dokument(e) unter „Prüfen“ wurden "
+                                             "ohne diese Daten erkannt. Jetzt neu erkennen?"):
+                self._alle_neu_erkennen()
+            elif not offen:
+                messagebox.showinfo("Stammdaten", text)
+            return
         if ohne_betrag:
             text += (f"\n\n{ohne_betrag} Kostensätze ohne Monatsbetrag/Tagessatz – Häuser werden erkannt, "
                      "der Abgleich mit dem Bedarf für den Lebensunterhalt geht aber erst mit Beträgen.")
         messagebox.showinfo("Stammdaten", text)
+
+    def _beschreibung_beispiel(self):
+        if not hasattr(self, "lbl_beispiel"):
+            return
+        b = {k[1]: v.get() for k, v in self.e_vars.items() if k[0] == "beschreibung"}
+        bsp = kern.beschreibung_bauen(
+            {"kategorie": "Änderung", "bescheiddatum": "2025-12-03", "haus": "Frankfurt", "name": "Mustermann, Max",
+             "kundennummer": "022P425485"}, {"zeitraum_von": "2026-01-01", "zeitraum_bis": "2027-06-30",
+                                            "betrag": "812,00"}, b, self.k.cfg.get("beschreibung_art", {}))
+        self.lbl_beispiel.configure(text=f"Beispiel: {bsp}")
 
     def _haeuser_csv(self):
         """Light: nur die Häuser-Tabelle (CSV-Export aus Ninox) – für Haus-Erkennung und Auswahlliste."""
@@ -1219,6 +1452,8 @@ class App(tk.Tk):
 
     def _konfiguration_anwenden(self):
         self._kategorien_setzen()
+        if LIGHT:
+            self._beschreibung_neu()
         try:
             self.lbl_tess.configure(text=f"Verwendet: {kern.tesseract_finden(self.k.cfg)}")
         except RuntimeError:

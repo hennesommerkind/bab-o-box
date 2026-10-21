@@ -44,6 +44,11 @@ FELDER = ["name", "kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", 
           "antragsdatum", "haus"]
 # Light erfasst bewusst nur diese Angaben (kein Geburtsdatum, keine Beträge/Zeiträume)
 FELDER_LIGHT = ["kundennummer", "name", "haus", "kategorie", "bescheiddatum"]
+# Light: weitere Angaben der Pro-Erkennung, nur zum Nachsehen (kein Geburtsdatum)
+ZUSATZ_FELDER = {"antragsdatum": "Antrag gestellt am", "status": "Status", "zeitraum_von": "Bewilligt von",
+                 "zeitraum_bis": "Bewilligt bis", "betrag": "BAB monatlich (aktuell)", "zeitraeume": "Bewilligungsabschnitte",
+                 "kostensatz_info": "Kostensatz (aus Bedarf für den Lebensunterhalt)", "notiz": "Notiz",
+                 "antragsart_hinweis": "Text deutet auf Antragsart", "hinweise": "Hinweise"}
 FELD_TITEL = {"kundennummer": "Kundennummer", "name": "Name", "haus": "Haus", "kategorie": "Art",
               "bescheiddatum": "Bescheiddatum"}
 MONATE = {"januar": 1, "februar": 2, "märz": 3, "marz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6, "juli": 7,
@@ -80,6 +85,12 @@ def daten_ordner() -> Path:
         except Exception:
             pass
     p.mkdir(parents=True, exist_ok=True)
+    pro_stamm = basis / "BAB-O-BOX" / "stammdaten.json"
+    if LIGHT and not (p / "stammdaten.json").exists() and pro_stamm.exists():  # Häuser/Kostensätze aus Pro übernehmen
+        try:
+            shutil.copy2(pro_stamm, p / "stammdaten.json")
+        except Exception:
+            pass
     return p
 
 
@@ -97,6 +108,10 @@ def standard_einstellungen() -> dict:
         "ki": {"aktiv": False, "url": "http://localhost:11434", "modell": "gemma4:e2b"},
         "ocr": {"aktiv": True, "sprache": "deu", "tesseract": ""},
         "ueberwachung": {"intervall_s": 30, "beim_start_starten": False},
+        "mitarbeitende": "",
+        "beschreibung": {"vorsatz": "BAB", "art": True, "art_lang": True, "datum": True, "zeitraum": False,
+                         "haus": False, "name": False, "kundennummer": False, "betrag": False,
+                         "datumsformat": "MM/JJ"},
         "testlauf": True,
     }
 
@@ -508,7 +523,7 @@ WORT = rf"{B}(?:{B}|['’\-.])*"  # Namensteil: Buchstaben, Apostroph, Bindestri
 NAME_GUELTIG = re.compile(rf"^{WORT}(?:[ ,]+{WORT}){{0,4}}$")
 ANREDE = re.compile(r"^(?:Herrn?|Frau|Fr\.|Hr\.)\s+", re.IGNORECASE)
 HAUS_HINWEIS = re.compile(r"Kolping|Jugendwohnen|Wohnheim", re.IGNORECASE)
-CO_HINWEIS = re.compile(r"\bc/o\b|\bbei\b|z\.\s*Hd", re.IGNORECASE)
+CO_HINWEIS = re.compile(r"\bc/o\b|\bc/0\b", re.IGNORECASE)  # "c/o Kolping" = Bewohner*in; "z. Hd." = Mitarbeiter*in
 
 
 def _name_form(roh: str) -> tuple[str, str] | None:
@@ -532,7 +547,8 @@ def _an_haus_gerichtet(kopf: str, nachname: str) -> bool:
     (z. B. 'Kolping Jugendwohnen' und darunter 'Frau Lea Guse', oder 'Lea Guse Kolping Jugendwohnen') –
     nicht als Bewohner*in mit 'c/o Kolping'."""
     zeilen = [z.strip() for z in kopf.splitlines()]
-    name_i = [i for i, z in enumerate(zeilen) if re.search(rf"\b{re.escape(nachname)}\b", z)]
+    name_i = [i for i, z in enumerate(zeilen) if re.search(rf"\b{re.escape(nachname)}\b", z)
+              and not re.search(r"Guten\s+Tag|Sehr\s+geehrt|Hallo", z, re.IGNORECASE)]
     haus_i = [i for i, z in enumerate(zeilen) if HAUS_HINWEIS.search(z)]
     for i in name_i:
         z = zeilen[i]
@@ -540,7 +556,9 @@ def _an_haus_gerichtet(kopf: str, nachname: str) -> bool:
             if CO_HINWEIS.search(z):
                 return False  # "Max Mustermann c/o Kolping" -> Bewohner*in
             return True       # "Lea Guse Kolping Jugendwohnen" -> Ansprechperson
-        if any(0 < i - h <= 3 for h in haus_i):  # Haus steht direkt darüber -> Ansprechperson im Haus
+        if any(0 < i - h <= 5 for h in haus_i) and not CO_HINWEIS.search(z):  # Haus darüber -> Ansprechperson
+            return True
+        if re.search(r"z\.?\s*H(?:d|än)", z, re.IGNORECASE):  # "z. Hd. Frau Guse" -> Ansprechperson
             return True
     return False
 
@@ -551,6 +569,7 @@ def name_lesen(text: str, cfg: dict) -> str | None:
     2. Anrede "Guten Tag …" und Anschriftenfeld – aber nur, wenn der Brief nicht an eine Ansprechperson
        des Hauses gerichtet ist (Abtretung)."""
     sperrworte = [w.strip().lower() for w in cfg["regeln"].get("name_sperrworte", []) if w.strip()]
+    sperrworte += [w.strip().lower() for w in re.split(r"[,;\n]", str(cfg.get("mitarbeitende") or "")) if len(w.strip()) > 2]
     for m in alle(cfg["muster"].get("name", []), text):
         f = _name_form(m.group(1))
         if f and f[1] and not _gesperrt(f"{f[0]} {f[1]}", sperrworte):
@@ -1457,6 +1476,35 @@ class Ninox:
 
 # =========================================================================== Verarbeitung
 
+def _datum_format(iso: str | None, fmt: str) -> str:
+    if not iso or len(iso) != 10:
+        return iso or ""
+    j, m, t = iso.split("-")
+    return {"MM/JJ": f"{m}/{j[2:]}", "MM/JJJJ": f"{m}/{j}", "TT.MM.JJ": f"{t}.{m}.{j[2:]}"}.get(fmt, f"{t}.{m}.{j}")
+
+
+def beschreibung_bauen(werte: dict, zusatz: dict, b: dict, art_lang: dict) -> str:
+    """Text fürs Ninox-Feld „Beschreibung“, z. B. „BAB Änderungsbescheid 12/25“. Welche Teile: Einstellungen."""
+    fmt = b.get("datumsformat", "MM/JJ")
+    teile = [b.get("vorsatz", "")]
+    art = werte.get("kategorie") or ""
+    if b.get("art") and art:
+        teile.append(art_lang.get(art, art) if b.get("art_lang") else art)
+    if b.get("datum"):
+        teile.append(_datum_format(werte.get("bescheiddatum"), fmt))
+    if b.get("zeitraum") and zusatz.get("zeitraum_von"):
+        teile.append(f"{_datum_format(zusatz['zeitraum_von'], fmt)}–{_datum_format(zusatz.get('zeitraum_bis'), fmt)}")
+    if b.get("haus"):
+        teile.append(werte.get("haus") or "")
+    if b.get("name"):
+        teile.append(werte.get("name") or "")
+    if b.get("kundennummer"):
+        teile.append(werte.get("kundennummer") or "")
+    if b.get("betrag") and zusatz.get("betrag"):
+        teile.append(f"{zusatz['betrag']} €")
+    return " ".join(t.strip() for t in teile if t and t.strip())
+
+
 def light_grund(e: "Ergebnis") -> str:
     """Light: jedes Dokument geht in „Prüfen“. Der Grund sagt, was fehlt bzw. unsicher ist."""
     fehlend = [FELD_TITEL[f] for f in FELDER_LIGHT if not getattr(e, f)]
@@ -1599,7 +1647,8 @@ class Verarbeitung:
             ziel = eindeutiger_pfad(self.pruefen / original.name)
             shutil.move(quelle, ziel)
             erkannt = {f: getattr(e, f) for f in FELDER_LIGHT} if LIGHT else asdict(e)
-            grund_pfad(ziel).write_text(json.dumps({"grund": str(grund), "erkannt": erkannt},
+            zusatz = {k: v for k, v in asdict(e).items() if k in ZUSATZ_FELDER and v} if LIGHT else {}
+            grund_pfad(ziel).write_text(json.dumps({"grund": str(grund), "erkannt": erkannt, "zusatz": zusatz},
                                                    ensure_ascii=False, indent=2), encoding="utf-8")
             if quelle != original:
                 self._original_wegraeumen(original)
