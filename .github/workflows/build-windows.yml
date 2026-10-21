@@ -1,4 +1,4 @@
-# Baut BAB-Eingang.exe in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
+# Baut BAB-O-BOX.exe in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
 # Repository anlegen, alle Dateien hochladen, unter "Actions" den Lauf starten.
 # Jeder Push auf main erzeugt automatisch ein Release mit fertigem ZIP (Seite "Releases").
 name: Windows-Build
@@ -35,8 +35,8 @@ jobs:
 
       - name: Programm bauen
         run: >
-          pyinstaller --noconfirm --clean --windowed --name "BAB-Eingang"
-          --add-data "config_standard.toml;."
+          pyinstaller --noconfirm --clean --windowed --name "BAB-O-BOX"
+          --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt"
           --collect-all pypdfium2 --collect-all pypdfium2_raw
           bab_gui.py
 
@@ -44,16 +44,16 @@ jobs:
         shell: pwsh
         run: |
           $src = "C:\Program Files\Tesseract-OCR"
-          $dst = "dist\BAB-Eingang\tesseract"
+          $dst = "dist\BAB-O-BOX\tesseract"
           robocopy $src $dst /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP
           foreach ($l in "deu","eng","osd") { if (Test-Path "$src\tessdata\$l.traineddata") { Copy-Item "$src\tessdata\$l.traineddata" "$dst\tessdata\" } }
-          Copy-Item LIESMICH_ANWENDER.md dist\BAB-Eingang\
+          Copy-Item LIESMICH_ANWENDER.md dist\BAB-O-BOX\
           exit 0
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BAB-Eingang-Windows
-          path: dist/BAB-Eingang
+          name: BAB-O-BOX-Windows
+          path: dist/BAB-O-BOX
 
       - name: Release mit ZIP anlegen
         if: github.ref == 'refs/heads/main'
@@ -61,5 +61,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Compress-Archive -Path dist\BAB-Eingang -DestinationPath BAB-Eingang-Windows.zip
-          gh release create "v1.0.${{ github.run_number }}" BAB-Eingang-Windows.zip --target "${{ github.sha }}" --title "BAB-Eingang 1.0.${{ github.run_number }}" --notes "ZIP herunterladen, entpacken, BAB-Eingang.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."
+          Compress-Archive -Path dist\BAB-O-BOX -DestinationPath BAB-O-BOX-Windows.zip
+          gh release create "v1.0.${{ github.run_number }}" BAB-O-BOX-Windows.zip --target "${{ github.sha }}" --title "BAB-O-BOX 1.0.${{ github.run_number }}" --notes "ZIP herunterladen, entpacken, BAB-O-BOX.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."

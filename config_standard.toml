@@ -1,13 +1,7 @@
-# BAB-Eingang – Regeln und Ninox-Felder
-# Ordner, Ninox-Zugang, KI und OCR stellst du in der App unter "Einstellungen" ein.
-# Diese Datei ist für Feinarbeiten: Suchmuster, Kategorien, Dateinamen, Feldnamen in Ninox.
-# Nach Änderungen in der App auf "Konfiguration neu laden" klicken.
-#
-# version: wird bei neuen Programmversionen hochgezählt; eine ältere Datei im Benutzerprofil wird dann
-# gesichert und durch diese ersetzt. Eigene Änderungen bitte danach übertragen.
-version = 4
-# Aufbau des Ninox-Teils – solange gleich, werden eigene Ninox-Einstellungen bei Updates übernommen
-ninox_stand = 3
+# BAB-O-BOX – STANDARDREGELN
+# Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
+# "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
+version = 5
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -43,7 +37,8 @@ verdacht_ts_bei = ['Änderung']
 name_sperrworte = ['Kolping', 'Jugendwohnen', 'Agentur', 'Arbeit', 'Bescheid', 'Leistung', 'Frau ', 'Herr ']
 
 [dateiname]
-# Platzhalter: {name} {ninox_name} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
+# Platzhalter: {name} {ninox_name} {haus} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
+#   {haus}       = Kürzel des erkannten Hauses (aus den Ninox-Stammdaten)
 #   {name}       = Name wie im Bescheid gelesen ("Nachname_Vorname"); nicht lesbar → Name aus Ninox → "ohne-Name"
 #                  Der Name dient NUR dem Dateinamen – die Zuordnung in Ninox läuft über Kundennummer/Geburtsdatum.
 #   {ninox_name} = Name aus Ninox (name_ausdruck, s. u.)
@@ -80,6 +75,16 @@ name = [
   'Bescheid\s+f[üu]e?r\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
   'Leistungsangelegenheit\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
   'Kundenname\s+([A-ZÄÖÜ][^\n]{2,60}?)\s+\d{3}\s?[A-Z]\s?\d{6}',
+]
+# "auf dem am 16.09.2025 gestellten Antrag" – damit wird der passende Antrag in Ninox gefunden
+antragsdatum = [
+  'am\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+gestellten\s+Antrag',
+  'Ihr(?:em|en)?\s+Antrag\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+# "… für die Zeit ab 01.06.2027 erst ausgezahlt, wenn Sie … den letzten Tag der Abschlussprüfung nachweisen"
+# → Notiz am Bescheid
+auszahlung_nach_nachweis = [
+  'f[üu]e?r\s+die\s+Zeit\s+ab\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+erst\s+ausgezahlt',
 ]
 geburtsdatum = [
   'geb\.?\s*am\s*(\d{1,2}\.\d{1,2}\.\d{4})',
@@ -160,6 +165,20 @@ muster = [
   '(?:neue|ge[äa]e?nderte)\s+(?:Entgelt|Leistungs)vereinbarung',
 ]
 
+# --------------------------------------------------------------------------- Antragsart (nur Kontrolle)
+# Die Antragsart (Erstbewilligung, Weiterbewilligung …) steht am Antrag in Ninox – der Bescheid erbt sie,
+# weil er am passenden Antrag (über das Antragsdatum) abgelegt wird. Diese Muster dienen nur der Gegenprobe:
+# deutet der Bescheid auf eine andere Art als der gefundene Antrag, gibt es einen Hinweis.
+# EB/WB lassen sich am Bescheid nicht sicher unterscheiden (z. B. ein einziger Bescheid bei späterem Einzug
+# oder zweijähriger Ausbildung) – dafür gibt es bewusst kein Muster.
+[[antragsart_hinweise]]
+name   = 'Verlängerung wg. nicht-best. Prüfung'
+muster = ['Wiederholungspr[üu]e?fung', 'nicht\s+bestandene[nr]?\s+(?:Abschluss|Gesellen)?pr[üu]e?fung']
+
+[[antragsart_hinweise]]
+name   = 'reguläre Ausb-Verlängerung'
+muster = ['Verl[äa]e?ngerung\s+(?:der|Ihrer)\s+(?:Berufs)?[Aa]usbildung(?:szeit|sdauer)?']
+
 # --------------------------------------------------------------------------- Ninox
 # Aufbau wie in eurer Ninox-Datenbank:
 #   Bewohner*in  →  Antrag (neuester)  →  Bescheid  →  Bewilligungsabschnitte (eine Zeile je Zeitraum)
@@ -176,10 +195,15 @@ feld_geburtsdatum = 'Geburtsdatum'
 name_ausdruck     = 'Nachname + "_" + Vorname'
 
 [ninox.antrag]
-# Der Bescheid wird an den NEUESTEN Antrag der Person gehängt.
+# Der Bescheid wird an den Antrag gehängt, dessen Datum zum "am … gestellten Antrag" im Bescheid passt
+# (± toleranz_tage). Kein passender → bei nur einem Antrag dieser, sonst "Prüfen".
+# Ohne Antragsdatum im Bescheid → neuester Antrag.
 # tabelle = '' → Bescheid hängt direkt an der Person (dann bescheid.feld_eltern = Verknüpfung zur Person).
-tabelle       = 'Anträge'
-feld_bewohner = 'Bewohner*in'
+tabelle           = 'Anträge'
+feld_bewohner     = 'Bewohner*in'
+feld_antragsdatum = 'Antragsdatum'           # Datumsfeld; '' = immer neuester Antrag
+feld_antragsart   = 'Antragsart'             # nur für die Gegenprobe; '' = keine
+toleranz_tage     = 14
 
 [ninox.bescheid]
 tabelle     = 'Bescheide'
@@ -187,6 +211,7 @@ feld_eltern = 'Antrag'                       # Verknüpfung Bescheid → Antrag
 [ninox.bescheid.felder]
 datum  = 'Datum des Bescheides'
 status = 'Status'
+notiz  = 'Notiz'                             # z. B. "Ab 01.06.2027 Auszahlung erst nach Nachweis …"; '' = nicht setzen
 
 [ninox.abschnitte]
 tabelle     = 'Bewilligungsabschnitte'
@@ -198,7 +223,28 @@ betrag     = 'Bewilligtes BAB'
 kostensatz = 'Kostensatz'
 # EA inkl. VP, VP, ZZB, Wertminderung trägt weiterhin ihr ein bzw. berechnet Ninox.
 
-# Kostensatz je Abschnitt: der neueste, der zum Beginn schon gilt ("name" = Auswahlwert in Ninox)
+# --- Stammdaten der Häuser aus Ninox (werden täglich geladen und lokal gespeichert)
+# Häuser: über Straße + PLZ im Bescheid wird das Haus erkannt.
+# Kostensätze: je Abschnitt der neueste Kostensatz DES ERKANNTEN HAUSES, der zum Beginn schon gilt.
+# haeuser_tabelle = '' → keine Stammdaten; dann gelten die Kostensätze weiter unten für alle.
+[ninox.stammdaten]
+haeuser_tabelle      = 'Häuser'
+kostensaetze_tabelle = 'Kostensätze'
+
+[ninox.stammdaten.haeuser_felder]
+name      = 'Name'
+kuerzel   = 'Kürzel'
+strasse   = 'Straße'
+plz       = 'PLZ'
+ort       = 'Ort'
+anschrift = ''                               # falls die Anschrift in EINEM Feld steht: dessen Name
+
+[ninox.stammdaten.kostensaetze_felder]
+bezeichnung = 'Bezeichnung'                  # Anzeige, z. B. "B-PB 01/25 (ab 01.01.2025)"
+ab          = 'Gültig ab'
+haus        = 'Haus'                         # Verknüpfung zum Haus
+
+# Nur ohne Stammdaten: Kostensätze aus dieser Liste ("name" = Auswahlwert in Ninox)
 [[ninox.kostensaetze]]
 name = 'B-PB 01/25 (ab 01.01.2025)'
 ab   = '2025-01-01'

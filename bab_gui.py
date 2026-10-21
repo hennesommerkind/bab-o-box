@@ -1,7 +1,7 @@
 """
-BAB-Eingang – Windows-Oberfläche.
+BAB-O-BOX – Windows-Oberfläche.
 
-Start:  BAB-Eingang.exe   (oder  python bab_gui.py)
+Start:  BAB-O-BOX.exe   (oder  python bab_gui.py)
         --minimiert       startet verkleinert (für den Windows-Autostart)
 """
 from __future__ import annotations
@@ -48,6 +48,20 @@ def autostart_aktiv() -> bool:
         return False
 
 
+def autostart_umziehen() -> None:
+    """Nach der Umbenennung: alten Autostart-Eintrag "BAB-Eingang" durch "BAB-O-BOX" ersetzen."""
+    if os.name != "nt":
+        return
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as key:
+            winreg.QueryValueEx(key, kern.ALTER_APP_NAME)
+            winreg.DeleteValue(key, kern.ALTER_APP_NAME)
+            autostart_setzen(True)
+    except OSError:
+        pass
+
+
 def autostart_setzen(an: bool) -> None:
     if os.name != "nt":
         return
@@ -92,10 +106,11 @@ def text_fenster(eltern, titel: str, inhalt: str) -> None:
 class App(tk.Tk):
     def __init__(self, minimiert: bool = False):
         super().__init__()
-        self.title("BAB-Eingang")
+        self.title("BAB-O-BOX")
         self.geometry("1060x700")
         self.minsize(860, 580)
 
+        autostart_umziehen()
         self.q: queue.Queue = queue.Queue()
         self.k = kern.Konfiguration()
         handler = QueueHandler(self.q)
@@ -255,6 +270,8 @@ class App(tk.Tk):
             ("Name (aus dem Bescheid)", z.get("name") or "–", ""),
             ("Kundennummer", z.get("kundennummer") or "–", ""),
             ("Geburtsdatum", de(z.get("geburtsdatum")), ""),
+            ("Haus", z.get("haus") or "–", ""),
+            ("Antrag gestellt am", de(z.get("antragsdatum")), ""),
             ("Art", z.get("kategorie") or "–", ""),
             ("Bescheiddatum", de(z.get("bescheiddatum")), ""),
             ("Bewilligt", f"{de(z.get('zeitraum_von'))} – {de(z.get('zeitraum_bis'))}", ""),
@@ -262,6 +279,10 @@ class App(tk.Tk):
         ]
         if z.get("zeitraeume"):
             teile.append(("Bewilligungsabschnitte", z["zeitraeume"].replace(" | ", "\n"), ""))
+        if z.get("notiz"):
+            teile.append(("Notiz zum Bescheid", z["notiz"], ""))
+        if z.get("antragsart_hinweis"):
+            teile.append(("Text deutet auf Antragsart", z["antragsart_hinweis"], ""))
         teile += [("Erkannt durch", {"regeln": "Regeln", "regeln+ki": "Regeln + KI", "manuell": "manuelle Eingabe"}
                    .get(z.get("quelle"), z.get("quelle") or "–"), ""),
                   ("Eingangsdatei · Zeit", f"{z.get('eingang', '')} · {z.get('zeit', '')}", "feld")]
@@ -346,7 +367,7 @@ class App(tk.Tk):
 
         self.p_vars: dict[str, tk.StringVar] = {}
         felder = [("name", "Name (nur Dateiname)"), ("kundennummer", "Kundennummer"), ("geburtsdatum", "Geburtsdatum"),
-                  ("kategorie", "Kategorie"),
+                  ("antragsdatum", "Antrag gestellt am"), ("kategorie", "Kategorie"),
                   ("bescheiddatum", "Bescheiddatum"), ("zeitraum_von", "Bewilligt von"), ("zeitraum_bis", "Bewilligt bis"),
                   ("betrag", "Betrag mtl. (€)")]
         for i, (key, text) in enumerate(felder, start=1):
@@ -405,7 +426,7 @@ class App(tk.Tk):
         erkannt = info.get("erkannt", {})
         for key, var in self.p_vars.items():
             wert = erkannt.get(key) or ""
-            var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum") else wert)
+            var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum", "antragsdatum") else wert)
 
     def _pruefen_pdf(self):
         pfad = self._pruefen_gewaehlt()
@@ -425,7 +446,7 @@ class App(tk.Tk):
         vorgaben["kundennummer"] = kdnr
         vorgaben["name"] = w["name"]
         vorgaben["kategorie"] = w["kategorie"]
-        for key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum"):
+        for key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum", "antragsdatum"):
             if w[key]:
                 iso = kern.datum_iso(w[key])
                 if not iso:
@@ -553,7 +574,12 @@ class App(tk.Tk):
         feld(r, 1, "API-Schlüssel", ("ninox", "api_schluessel"), geheim=True)
         feld(r, 2, "Team-ID", ("ninox", "team_id"), hinweis="leer lassen → „Testen“ zeigt die Teams")
         feld(r, 3, "Datenbank-ID", ("ninox", "datenbank_id"), hinweis="leer lassen → „Testen“ zeigt die Datenbanken")
-        ttk.Button(r, text="Verbindung testen", command=self._ninox_testen).grid(row=4, column=1, sticky="w", pady=(6, 0))
+        knoepfe = ttk.Frame(r)
+        knoepfe.grid(row=4, column=1, sticky="w", pady=(6, 0))
+        ttk.Button(knoepfe, text="Verbindung testen", command=self._ninox_testen).pack(side="left")
+        ttk.Button(knoepfe, text="Stammdaten laden (Häuser, Kostensätze)", command=self._stammdaten_laden).pack(side="left", padx=6)
+        self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel")
+        self.lbl_stamm.grid(row=5, column=1, sticky="w")
 
         r = ttk.LabelFrame(f, text="Texterkennung (lokal)", padding=8)
         r.pack(fill="x", pady=4)
@@ -587,7 +613,8 @@ class App(tk.Tk):
         knopf = ttk.Frame(f)
         knopf.pack(fill="x", pady=(10, 0))
         ttk.Button(knopf, text="💾 Speichern", command=self._speichern).pack(side="left")
-        ttk.Button(knopf, text="Regeldatei bearbeiten (config.toml)", command=lambda: kern.ordner_oeffnen(self.k.toml_pfad)).pack(side="left", padx=6)
+        ttk.Button(knopf, text="Eigene Regeln bearbeiten", command=lambda: kern.ordner_oeffnen(self.k.eigen_pfad)).pack(side="left", padx=6)
+        ttk.Button(knopf, text="Standardregeln ansehen", command=lambda: kern.ordner_oeffnen(self.k.ansicht_pfad)).pack(side="left")
         ttk.Button(knopf, text="Konfiguration neu laden", command=self._neu_laden).pack(side="left")
         ttk.Button(knopf, text="Datenordner öffnen", command=lambda: kern.ordner_oeffnen(self.k.ordner)).pack(side="left", padx=6)
 
@@ -621,6 +648,40 @@ class App(tk.Tk):
 
     def _formular_cfg(self) -> dict:
         return kern.tief_mischen(self.k.cfg, self._formular_lesen())
+
+    def _stammdaten_text(self) -> str:
+        st = self.k.cfg.get("_stammdaten") or {}
+        if not st:
+            return "Stammdaten: noch nicht geladen"
+        haeuser = ", ".join(h.get("kuerzel") or h.get("name") or "?" for h in st.get("haeuser", [])[:8])
+        return (f"Stammdaten vom {st.get('geladen', '?')}: {len(st.get('haeuser', []))} Häuser ({haeuser}), "
+                f"{len(st.get('kostensaetze', []))} Kostensätze")
+
+    def _stammdaten_laden(self):
+        cfg = self._formular_cfg()
+
+        def laden():
+            return kern.Ninox(cfg).stammdaten_laden(self.k.ordner)
+
+        def fertig(daten, fehler):
+            if fehler:
+                messagebox.showerror("Stammdaten", f"Konnte nicht laden:\n{fehler}\n\nTipp: „Verbindung testen“ zeigt, "
+                                                   "ob Tabellen- und Feldnamen stimmen.")
+                return
+            self.k.laden()
+            self._konfiguration_anwenden()
+            self.lbl_stamm.configure(text=self._stammdaten_text())
+            ohne_adresse = [h.get("kuerzel") or h.get("name") for h in daten["haeuser"]
+                            if not ((h.get("strasse") and h.get("plz")) or h.get("anschrift"))]
+            ohne_haus = sum(1 for k in daten["kostensaetze"] if k.get("haus_id") is None)
+            text = self._stammdaten_text()
+            if ohne_adresse:
+                text += f"\n\nOhne vollständige Anschrift (Haus kann nicht erkannt werden): {', '.join(ohne_adresse)}"
+            if ohne_haus:
+                text += f"\n\n{ohne_haus} Kostensätze ohne Haus-Verknüpfung."
+            messagebox.showinfo("Stammdaten", text)
+
+        self._hintergrund(laden, fertig, "Lade Stammdaten …")
 
     def _ninox_testen(self):
         cfg = self._formular_cfg()
@@ -796,7 +857,7 @@ def main():
             (kern.daten_ordner() / "absturz.txt").write_text(fehler, encoding="utf-8")
             root = tk.Tk()
             root.withdraw()
-            messagebox.showerror("BAB-Eingang", f"Das Programm konnte nicht starten:\n\n{fehler[-1500:]}")
+            messagebox.showerror("BAB-O-BOX", f"Das Programm konnte nicht starten:\n\n{fehler[-1500:]}")
         except Exception:
             print(fehler, file=sys.stderr)
 

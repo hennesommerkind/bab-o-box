@@ -1,0 +1,146 @@
+# BAB-Eingang – Regeln und Ninox-Felder
+# Ordner, Ninox-Zugang, KI und OCR stellst du in der App unter "Einstellungen" ein.
+# Diese Datei ist für Feinarbeiten: Suchmuster, Kategorien, Dateinamen, Feldnamen in Ninox.
+# Nach Änderungen in der App auf "Konfiguration neu laden" klicken.
+#
+# Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
+#   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
+#   Datum:       "Datum: 03. Dezember 2025"
+#   Überschrift: "Änderungsbescheid zum Bescheid vom 13.11.2025"  oder  "Bescheid für <Name>, geb. am 25.04.2005"
+#   Tabelle:     "von bis mtl. Betrag"  →  "06.10.2025 31.03.2027 2.015,00 €"  (ggf. mehrere Zeilen)
+# OCR-Fehler sind eingeplant: ä→a, ü→ii/u, § → $/8, "Ill" statt "III".
+
+[ocr]
+dpi = 300
+jpeg_qualitaet = 80
+timeout_s = 300
+
+[ki]
+max_zeichen = 6000
+timeout_s = 180
+
+[ueberwachung]
+stabil_warten_s = 3
+
+[regeln]
+# Ohne diese Felder geht ein Dokument nach "Prüfen". Die Kundennummer wird gesondert behandelt:
+# fehlt sie, reicht das Geburtsdatum, wenn in Ninox ein Geburtsdatum-Feld konfiguriert ist.
+pflichtfelder = ['kategorie', 'bescheiddatum']
+# Nur für "hinweis"-Muster der Kategorien: wie weit vorn im Text gesucht wird
+kategorie_suchbereich_zeichen = 6000
+# Fehlt dieses Wort im ganzen Dokument, kommt ein Hinweis ins Protokoll (kein Stopp)
+erforderliches_stichwort = 'Berufsausbildungsbeihilfe|BAB'
+
+[dateiname]
+# Platzhalter: {name} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
+#   {name}  = aus Ninox (name_ausdruck, s. u.), im Testlauf die Kundennummer
+#   {datum} = Bescheiddatum
+# Gleiche Namen bekommen automatisch _2, _3 … angehängt.
+schema = '{kundennummer}_BAB-{kategorie}_{geburtsdatum}.pdf'
+
+# --------------------------------------------------------------------------- Suchmuster
+# Werden alle angewendet; Gruppe 1 ist der Wert (Tabellenzeile: Gruppen 1–3).
+# Mit echten Bescheiden über den Reiter "Analyse" prüfen.
+[muster]
+# Kundennummer: beschriftet (zählt 3-fach) …
+kundennummer_beschriftet = [
+  '(?:Kunden-?\s*nummer|Kd\.?-?\s*Nr\.?)\s*:?\s*(\d{3}\s?[A-Z]\s?\d{6})',
+  'Mein\s+Zeichen\s*:?\s*\d{3}-(\d{3}[A-Z]\d{6})',
+]
+# … und frei im Text, z. B. Barcode-Zeile *022P425485* (zählt 1-fach)
+kundennummer_frei = [
+  '(?<![A-Z0-9])(\d{3}[A-Z]\d{6})(?![A-Z0-9])',
+]
+# "Datum: 03. Dezember 2025" (zählt 3-fach)
+bescheiddatum = [
+  'Datum\s*:?\s*(\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4})',
+  'Datum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+# "… zum Bescheid vom 03.12.2025" / "anbei erhalten Sie den Änderungsbescheid vom 03.12.2025" (zählt 1-fach je Fundstelle)
+bescheiddatum_fallback = [
+  '(?:Bescheid|Berechnungsbogen\s+BAB)\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+geburtsdatum = [
+  'geb\.?\s*am\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+  'Geburtsdatum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+  'Leistungsangelegenheit\s.{0,60}?\bam\s+(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+# Tabellenzeile unter "von bis mtl. Betrag": Datum Datum [OCR-Rest] Betrag €
+tabellenzeile = [
+  '^\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+[^\d\n]{0,6}(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:€|EUR)',
+]
+# Nur falls keine Tabelle gefunden wurde:
+zeitraum = [
+  '(?:Zeitraum\s+)?vo[nm]\s*(\d{1,2}\.\d{1,2}\.\d{4})\s*bis\s*(?:zum\s*)?(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+betrag = [
+  'BAB-A\s*\(Berufsausbildung\)\s*(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:€|EUR)',
+  '(?:monatlich|mtl\.|in\s+H[öo]e?he\s+von)[^\d]{0,40}?(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:€|EUR)',
+]
+
+# --------------------------------------------------------------------------- Kategorien
+# "kopf"    = Überschrift/Betreff – gewinnt immer (das am weitesten oben stehende Kopf-Muster).
+# "hinweis" = schwächere Stichwörter, nur wenn kein Kopf-Muster passt.
+# Wichtig: "Bewilligung", "aufgehoben", "zurückgenommen" stehen als Standardtext in JEDEM Änderungsbescheid –
+# deshalb gehören solche Wörter nicht zu "kopf".
+# "name" muss exakt dem Auswahlwert in Ninox entsprechen.
+[[kategorien]]
+name    = 'Anhörung'
+kopf    = ['Anh[öo]e?rung\s+(?:zur|zum|gem[äa]e?[ßBs8]|nach)', '^\s*Anh[öo]e?rung\b']
+hinweis = ['Gelegenheit\s+zur\s+(?:Stellungnahme|[ÄA]e?u[ßs]erung)']
+
+[[kategorien]]
+name    = 'Mitwirkung'
+kopf    = ['Aufforderung\s+zur\s+Mitwirkung', 'fehlende\s+Unterlagen', 'Mitwirkungspflicht']
+hinweis = ['reichen\s+Sie\s+.{0,60}\s+(?:ein|nach)', 'Unterlagen\s+nach(?:zu)?reichen']
+
+[[kategorien]]
+name    = 'Aufhebung'
+kopf    = ['Aufhebungs-?\s*(?:und\s+Erstattungs)?bescheid', 'Erstattungsbescheid', 'R[üu]e?cknahme-?\s*und\s+Erstattungsbescheid']
+hinweis = ['Erstattungsforderung', 'zu\s+erstatten(?:de|den)?\s+Betrag']
+
+[[kategorien]]
+name    = 'Änderung'
+kopf    = ['[ÄA]e?nderungsbescheid']
+hinweis = ['[ÄA]e?nderung\s+der\s+Bewilligung', 'neu\s+berechnet']
+
+[[kategorien]]
+name    = 'Ablehnung'
+kopf    = ['Ablehnungsbescheid', '^\s*Ablehnung\s+(?:Ihres|des)\s+Antrag']
+hinweis = ['lehne\s+ich\s+.{0,80}\s+ab\b', 'kann\s+nicht\s+bewilligt\s+werden', 'wird\s+abgelehnt']
+
+[[kategorien]]
+name    = 'Bewilligung'
+kopf    = ['^\s*Bescheid\s+f[üu]e?r\s', 'Bewilligungsbescheid']
+hinweis = ['bewillige\s+ich', 'Bewilligung']
+
+# --------------------------------------------------------------------------- Ninox
+[ninox.bewohner]
+# Tabelle mit den Bewohner*innen – Namen wie in Ninox angezeigt
+tabelle           = 'Bewohner*innen'
+feld_kundennummer = 'BA-Kundennummer'
+# Geburtsdatum-Feld (Datumsfeld). Leer lassen (''), wenn es keins gibt.
+# Wenn gesetzt: zweiter Suchschlüssel, falls die Kundennummer unleserlich ist, und Gegenprobe
+# (Kundennummer gefunden, aber Geburtsdatum im Bescheid passt nicht → "Prüfen").
+feld_geburtsdatum = 'Geburtsdatum'
+# Ninox-Ausdruck für den Namensteil im Dateinamen
+name_ausdruck     = 'Nachname + "_" + Vorname'
+
+[ninox.dokumente]
+# Tabelle, in der pro Bescheid ein Datensatz entsteht (ID aus "Verbindung testen", z. B. "B")
+tabelle_id = 'B'
+
+[ninox.dokumente.felder]
+# links: interner Wert, rechts: Feldname in Ninox. Leer lassen ('') = nicht setzen.
+bewohner      = 'Bewohner*in'      # Verknüpfungsfeld zur Bewohner*innen-Tabelle
+kategorie     = 'Kategorie'        # Auswahlfeld
+bescheiddatum = 'Bescheiddatum'
+zeitraum_von  = 'Bewilligt von'
+zeitraum_bis  = 'Bewilligt bis'
+betrag        = 'BAB monatlich'    # Zahl – Betrag der letzten Tabellenzeile (aktueller Satz)
+zeitraeume    = ''                 # Textfeld, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
+geburtsdatum  = ''
+kundennummer  = ''
+hinweise      = ''                 # Textfeld für Auffälligkeiten bei der Erkennung
+dateiname     = 'Dateiname'
+datei         = 'Bescheid'         # Datei-/Bildfeld; '' = PDF nur als Anhang am Datensatz

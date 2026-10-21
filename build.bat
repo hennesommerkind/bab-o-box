@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  Baut BAB-Eingang.exe  (einmalig auf einem Windows-PC)
+rem  Baut BAB-O-BOX.exe  (einmalig auf einem Windows-PC)
 rem  Voraussetzungen: Python 3.11+ und Tesseract (UB Mannheim,
 rem  mit deutschem Sprachpaket) – siehe README
 rem ============================================================
@@ -18,13 +18,13 @@ python -m pip install --upgrade pip >nul
 pip install -r requirements.txt pyinstaller || (pause & exit /b 1)
 
 echo Baue Programm ...
-pyinstaller --noconfirm --clean --windowed --name "BAB-Eingang" ^
-  --add-data "config_standard.toml;." ^
+pyinstaller --noconfirm --clean --windowed --name "BAB-O-BOX" ^
+  --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt" ^
   --collect-all pypdfium2 --collect-all pypdfium2_raw ^
   bab_gui.py || (pause & exit /b 1)
 
 set "TESS=C:\Program Files\Tesseract-OCR"
-set "ZIEL=dist\BAB-Eingang\tesseract"
+set "ZIEL=dist\BAB-O-BOX\tesseract"
 if exist "%TESS%\tesseract.exe" (
   echo Packe Tesseract dazu ...
   robocopy "%TESS%" "%ZIEL%" /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP >nul
@@ -35,9 +35,9 @@ if exist "%TESS%\tesseract.exe" (
   echo          wenn Tesseract auf dem Ziel-PC installiert ist.
 )
 
-copy /Y LIESMICH_ANWENDER.md "dist\BAB-Eingang\" >nul
+copy /Y LIESMICH_ANWENDER.md "dist\BAB-O-BOX\" >nul
 
 echo.
-echo Fertig:  dist\BAB-Eingang\BAB-Eingang.exe
-echo Den ganzen Ordner dist\BAB-Eingang weitergeben (z. B. als ZIP).
+echo Fertig:  dist\BAB-O-BOX\BAB-O-BOX.exe
+echo Den ganzen Ordner dist\BAB-O-BOX weitergeben (z. B. als ZIP).
 pause
