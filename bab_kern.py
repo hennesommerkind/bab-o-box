@@ -490,23 +490,73 @@ def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
     return None
 
 
-NAME_GUELTIG = re.compile(r"^[A-ZÄÖÜ][A-Za-zÄÖÜäöüßéèáàçñ'\-]+(?:[ ,]+[A-Za-zÄÖÜäöüßéèáàçñ'\-]+){1,4}$")
+B = r"[^\W\d_]"  # ein Buchstabe – auch Ş, ı, ğ, ł, ć, é usw.
+WORT = rf"{B}(?:{B}|['’\-.])*"  # Namensteil: Buchstaben, Apostroph, Bindestrich
+NAME_GUELTIG = re.compile(rf"^{WORT}(?:[ ,]+{WORT}){{0,4}}$")
+ANREDE = re.compile(r"^(?:Herrn?|Frau|Fr\.|Hr\.)\s+", re.IGNORECASE)
+HAUS_HINWEIS = re.compile(r"Kolping|Jugendwohnen|Wohnheim", re.IGNORECASE)
+CO_HINWEIS = re.compile(r"\bc/o\b|\bbei\b|z\.\s*Hd", re.IGNORECASE)
+
+
+def _name_form(roh: str) -> tuple[str, str] | None:
+    """'Mustermann, Max' oder 'Max Mustermann' -> (Nachname, Vorname). Nur Nachname -> (Nachname, '')."""
+    roh = ANREDE.sub("", re.sub(r"\s+", " ", roh)).strip(" ,.;:")
+    if not NAME_GUELTIG.match(roh):
+        return None
+    if "," in roh:
+        nach, vor = [t.strip() for t in roh.split(",", 1)]
+        return (nach, vor) if nach else None
+    teile = roh.split(" ")
+    return (teile[-1], " ".join(teile[:-1]))
+
+
+def _gesperrt(name: str, sperrworte: list[str]) -> bool:
+    return any(w and w in name.lower() for w in sperrworte)
+
+
+def _an_haus_gerichtet(kopf: str, nachname: str) -> bool:
+    """True, wenn die Person mit diesem Nachnamen im Anschriftenfeld als Ansprechperson DES HAUSES steht
+    (z. B. 'Kolping Jugendwohnen' und darunter 'Frau Lea Guse', oder 'Lea Guse Kolping Jugendwohnen') –
+    nicht als Bewohner*in mit 'c/o Kolping'."""
+    zeilen = [z.strip() for z in kopf.splitlines()]
+    name_i = [i for i, z in enumerate(zeilen) if re.search(rf"\b{re.escape(nachname)}\b", z)]
+    haus_i = [i for i, z in enumerate(zeilen) if HAUS_HINWEIS.search(z)]
+    for i in name_i:
+        z = zeilen[i]
+        if HAUS_HINWEIS.search(z):  # Name und Haus in derselben Zeile
+            if CO_HINWEIS.search(z):
+                return False  # "Max Mustermann c/o Kolping" -> Bewohner*in
+            return True       # "Lea Guse Kolping Jugendwohnen" -> Ansprechperson
+        if any(0 < i - h <= 3 for h in haus_i):  # Haus steht direkt darüber -> Ansprechperson im Haus
+            return True
+    return False
 
 
 def name_lesen(text: str, cfg: dict) -> str | None:
-    """Name der/des Auszubildenden aus dem Bescheid als 'Nachname, Vorname'. Unsicher -> None."""
-    sperrworte = [w.lower() for w in cfg["regeln"].get("name_sperrworte", [])]
+    """Name der/des Auszubildenden als 'Nachname, Vorname'. Unsicher -> None (nie raten).
+    1. beschriftete Stellen ("Name, Vorname:", "Bescheid für … geb. am", "Kundenname" …)
+    2. Anrede "Guten Tag …" und Anschriftenfeld – aber nur, wenn der Brief nicht an eine Ansprechperson
+       des Hauses gerichtet ist (Abtretung)."""
+    sperrworte = [w.strip().lower() for w in cfg["regeln"].get("name_sperrworte", []) if w.strip()]
     for m in alle(cfg["muster"].get("name", []), text):
-        roh = re.sub(r"\s+", " ", m.group(1)).strip(" ,.;:")
-        if not NAME_GUELTIG.match(roh) or any(w in roh.lower() for w in sperrworte):
+        f = _name_form(m.group(1))
+        if f and f[1] and not _gesperrt(f"{f[0]} {f[1]}", sperrworte):
+            return f"{f[0]}, {f[1]}"
+
+    kopf = text[: cfg["regeln"].get("anschrift_bereich_zeichen", 1500)]
+    for m in alle(cfg["muster"].get("name_anrede", []), text):
+        roh = m.group(1)
+        if HAUS_HINWEIS.search(roh) or _gesperrt(roh, sperrworte):
             continue
-        if "," in roh:
-            nach, vor = [t.strip() for t in roh.split(",", 1)]
-        else:
-            teile = roh.split(" ")
-            vor, nach = " ".join(teile[:-1]), teile[-1]
-        if nach and vor:
-            return f"{nach}, {vor}"
+        f = _name_form(roh)
+        if not f or _an_haus_gerichtet(kopf, f[0]):
+            continue
+        nach, vor = f
+        if not vor:  # "Guten Tag Herr Mustermann" -> Vornamen im Anschriftenfeld suchen
+            v = re.search(rf"(?:^|\n)\s*(?:Herrn?\s+|Frau\s+)?({WORT}(?:\s+{WORT})?)\s+{re.escape(nach)}\b", kopf)
+            if v and not ANREDE.match(v.group(1) + " ") and v.group(1).lower() not in ("herrn", "herr", "frau"):
+                vor = v.group(1)
+        return f"{nach}, {vor}" if vor else nach
     return None
 
 

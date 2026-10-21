@@ -37,7 +37,11 @@ erforderliches_stichwort = 'Berufsausbildungsbeihilfe|BAB'
 # (s. ninox.kostensaetze) → nach "Prüfen", weil es vermutlich ein Änderungsbescheid TS ist. [] = abschalten
 verdacht_ts_bei = ['Änderung']
 # Wörter, die nie Teil eines Namens sind (Anschreiben an das Haus, Agentur …)
-name_sperrworte = ['Kolping', 'Jugendwohnen', 'Agentur', 'Arbeit', 'Bescheid', 'Leistung', 'Frau ', 'Herr ']
+# Hier auch Nachnamen von Kolleg*innen eintragen, an die Abtretungs-Bescheide gerichtet sind (z. B. 'Guse') –
+# dann werden sie nie als Name der/des Auszubildenden genommen.
+name_sperrworte = ['Kolping', 'Jugendwohnen', 'Agentur', 'Arbeit', 'Bescheid', 'Leistung', 'Bundesagentur']
+# So viele Zeichen vom Briefanfang gelten als Anschriftenfeld
+anschrift_bereich_zeichen = 1500
 
 [dateiname]
 # Platzhalter: {name} {ninox_name} {haus} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
@@ -74,10 +78,15 @@ bescheiddatum_fallback = [
 # Name der/des Auszubildenden – Gruppe 1. Wird geprüft (nur Buchstaben, 2–5 Wörter, keine Sperrworte).
 # NICHT "Guten Tag …" verwenden: bei Abtretung ist das Kolping als Empfänger.
 name = [
-  'Name,\s*Vorname\s*:?\s*([A-ZÄÖÜ][^\n(]{2,60}?)\s*(?:\(|\n|$)',
-  'Bescheid\s+f[üu]e?r\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
-  'Leistungsangelegenheit\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
-  'Kundenname\s+([A-ZÄÖÜ][^\n]{2,60}?)\s+\d{3}\s?[A-Z]\s?\d{6}',
+  'Name,\s*Vorname\s*:?\s*([^\W\d_][^\n(]{2,60}?)\s*(?:\(|\n|$)',
+  'Bescheid\s+f[üu]e?r\s+([^\W\d_][^\n,]{2,60}?)\s*,?\s*geb',
+  'Leistungsangelegenheit\s+([^\W\d_][^\n,]{2,60}?)\s*,?\s*geb',
+  'Kundenname\s+([^\W\d_][^\n]{2,60}?)\s+\d{3}\s?[A-Z]\s?\d{6}',
+]
+# Nur wenn oben nichts passt: Anrede. Wird verworfen, wenn der Brief an eine Ansprechperson des Hauses geht.
+name_anrede = [
+  'Guten\s+Tag\s+([^\n,]{2,60}?)\s*,',
+  'Sehr\s+geehrte[rs]?\s+([^\n,]{2,60}?)\s*,',
 ]
 # "auf dem am 16.09.2025 gestellten Antrag" – damit wird der passende Antrag in Ninox gefunden
 antragsdatum = [
