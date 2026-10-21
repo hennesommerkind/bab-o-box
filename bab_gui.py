@@ -1,7 +1,7 @@
 """
-BAB-O-BOX – Windows-Oberfläche.
+BAB-O-BOX – Windows-Oberfläche (Pro und Light).
 
-Start:  BAB-O-BOX.exe   (oder  python bab_gui.py)
+Start:  BAB-O-BOX-Pro.exe / BAB-O-BOX-Light.exe   (oder  python bab_gui.py  bzw.  python bab_light.py)
         --minimiert       startet verkleinert (für den Windows-Autostart)
 """
 from __future__ import annotations
@@ -16,13 +16,17 @@ import traceback
 from dataclasses import asdict
 from pathlib import Path
 
+import bab_edition
+
+_NAME = "BAB-O-BOX Light" if bab_edition.EDITION == "light" else "BAB-O-BOX"
+_EXE = Path(sys.executable).name if getattr(sys, "frozen", False) else "BAB-O-BOX.exe"
 
 
 def windows_meldung(text: str) -> None:
     """Meldung ohne Tk (funktioniert auch, wenn Tk fehlt)."""
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, text, "BAB-O-BOX", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, text, _NAME, 0x10)
     except Exception:
         print(text, file=sys.stderr)
 
@@ -38,7 +42,7 @@ def vollstaendig_entpackt() -> bool:
             "Das Programm ist nicht vollständig entpackt – es fehlen Dateien:\n  " + ", ".join(fehlend)
             + f"\n\nOrdner: {basis.parent}\n\n"
             "So geht's: die ZIP-Datei mit Rechtsklick → „Alle extrahieren …“ vollständig entpacken, warten, "
-            "bis Windows fertig ist, und dann BAB-O-BOX.exe im entpackten Ordner starten.\n\n"
+            f"bis Windows fertig ist, und dann {_EXE} im entpackten Ordner starten.\n\n"
             "Falls es danach wieder passiert, hat vermutlich der Virenschutz Dateien entfernt – dann bitte die IT fragen.")
         return False
     return True
@@ -54,7 +58,7 @@ from tkinter.scrolledtext import ScrolledText  # noqa: E402
 
 def notfall_protokoll(fehler: str) -> list[str]:
     """Startfehler aufschreiben – auch wenn sonst noch nichts funktioniert."""
-    orte = [Path(os.environ.get("APPDATA") or Path.home()) / "BAB-O-BOX" / "absturz.txt"]
+    orte = [Path(os.environ.get("APPDATA") or Path.home()) / _NAME / "absturz.txt"]
     if getattr(sys, "frozen", False):
         orte.append(Path(sys.executable).resolve().parent / "absturz.txt")
     geschrieben = []
@@ -73,7 +77,7 @@ def notfall_meldung(fehler: str) -> None:
     try:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("BAB-O-BOX", "Das Programm konnte nicht starten.\n\n" + fehler[-1500:]
+        messagebox.showerror(_NAME, "Das Programm konnte nicht starten.\n\n" + fehler[-1500:]
                              + ("\n\nDetails gespeichert in:\n" + "\n".join(orte) if orte else ""))
         root.destroy()
     except Exception:
@@ -90,7 +94,8 @@ except Exception:
 
 log = logging.getLogger("bab")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-STATUS_TEXT = {"ok": "abgelegt", "pruefen": "prüfen", "fehler": "Fehler"}
+LIGHT = kern.LIGHT
+STATUS_TEXT = {"ok": "freigegeben" if LIGHT else "abgelegt", "pruefen": "prüfen", "fehler": "Fehler"}
 
 
 # =========================================================================== kleine Helfer
@@ -115,10 +120,20 @@ def autostart_aktiv() -> bool:
 
 
 def autostart_umziehen() -> None:
-    """Nach der Umbenennung: alten Autostart-Eintrag "BAB-Eingang" durch "BAB-O-BOX" ersetzen."""
+    """Alten Autostart-Eintrag "BAB-Eingang" ersetzen und den Pfad auf diese exe setzen (neuer Ordner nach Update)."""
     if os.name != "nt":
         return
     import winreg
+    if autostart_aktiv() and getattr(sys, "frozen", False):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+                befehl = winreg.QueryValueEx(key, kern.APP_NAME)[0]
+            if sys.executable.lower() not in befehl.lower():
+                autostart_setzen(True)
+        except OSError:
+            pass
+    if LIGHT:
+        return
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as key:
             winreg.QueryValueEx(key, kern.ALTER_APP_NAME)
@@ -167,12 +182,112 @@ def text_fenster(eltern, titel: str, inhalt: str) -> None:
     ttk.Button(w, text="Schließen", command=w.destroy).pack(pady=(0, 8))
 
 
+class PdfVorschau(ttk.Frame):
+    """Seitenweise Vorschau eines PDFs (pypdfium2 + Pillow). Die Datei wird in den Speicher gelesen,
+    damit sie unter Windows nicht gesperrt ist und danach verschoben werden kann."""
+
+    def __init__(self, eltern):
+        super().__init__(eltern)
+        leiste = ttk.Frame(self)
+        leiste.pack(fill="x")
+        self.lbl = ttk.Label(leiste, text="Keine Vorschau", style="Hinweis.TLabel")
+        self.lbl.pack(side="left")
+        for text, befehl in (("▶", lambda: self.blaettern(1)), ("◀", lambda: self.blaettern(-1)),
+                             ("+", lambda: self.zoomen(1.25)), ("−", lambda: self.zoomen(0.8)),
+                             ("Breite", lambda: self.zoomen(None))):
+            ttk.Button(leiste, text=text, width=6 if text == "Breite" else 3, command=befehl).pack(side="right", padx=1)
+        rahmen = ttk.Frame(self)
+        rahmen.pack(fill="both", expand=True, pady=(4, 0))
+        self.canvas = tk.Canvas(rahmen, background="#8a8a8a", highlightthickness=0)
+        sy = ttk.Scrollbar(rahmen, orient="vertical", command=self.canvas.yview)
+        sx = ttk.Scrollbar(rahmen, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        sy.pack(side="right", fill="y")
+        sx.pack(side="bottom", fill="x")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._groesse)
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.canvas.bind("<Button-4>", lambda _e: self.canvas.yview_scroll(-3, "units"))
+        self.canvas.bind("<Button-5>", lambda _e: self.canvas.yview_scroll(3, "units"))
+        self.doc = None
+        self.seite = 0
+        self.zoom = None  # None = an Breite anpassen
+        self.bild = None
+        self._nach = None
+
+    def laden(self, pfad: Path | None) -> None:
+        self.leeren()
+        if not pfad or not pfad.exists():
+            return
+        try:
+            import pypdfium2 as pdfium
+            self.doc = pdfium.PdfDocument(pfad.read_bytes())
+        except Exception as ex:
+            self.lbl.configure(text=f"Vorschau nicht möglich: {ex}")
+            return
+        self.seite, self.zoom = 0, None
+        self.zeichnen()
+
+    def leeren(self) -> None:
+        self.canvas.delete("all")
+        self.bild = None
+        if self.doc is not None:
+            try:
+                self.doc.close()
+            except Exception:
+                pass
+        self.doc = None
+        self.lbl.configure(text="Keine Vorschau")
+
+    def blaettern(self, schritt: int) -> None:
+        if self.doc is not None and 0 <= self.seite + schritt < len(self.doc):
+            self.seite += schritt
+            self.zeichnen()
+            self.canvas.yview_moveto(0)
+
+    def zoomen(self, faktor: float | None) -> None:
+        if self.doc is None:
+            return
+        if faktor is None:
+            self.zoom = None
+        else:
+            self.zoom = (self.zoom or self._breiten_massstab()) * faktor
+        self.zeichnen()
+
+    def _breiten_massstab(self) -> float:
+        breite = max(self.canvas.winfo_width() - 8, 200)
+        return breite / self.doc[self.seite].get_width()
+
+    def _groesse(self, _evt=None) -> None:
+        if self.doc is not None and self.zoom is None:
+            if self._nach:
+                self.after_cancel(self._nach)
+            self._nach = self.after(150, self.zeichnen)
+
+    def zeichnen(self) -> None:
+        self._nach = None
+        if self.doc is None:
+            return
+        try:
+            from PIL import ImageTk
+            massstab = min(self.zoom or self._breiten_massstab(), 6.0)
+            bild = self.doc[self.seite].render(scale=massstab).to_pil()
+            self.bild = ImageTk.PhotoImage(bild)
+        except Exception as ex:
+            self.lbl.configure(text=f"Vorschau nicht möglich: {ex}")
+            return
+        self.canvas.delete("all")
+        self.canvas.create_image(4, 4, image=self.bild, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, self.bild.width() + 8, self.bild.height() + 8))
+        self.lbl.configure(text=f"Seite {self.seite + 1} von {len(self.doc)}")
+
+
 # =========================================================================== Hauptfenster
 
 class App(tk.Tk):
     def __init__(self, minimiert: bool = False, selbsttest: bool = False):
         super().__init__()
-        self.title("BAB-O-BOX")
+        self.title(kern.ANZEIGE_NAME)
         self.geometry("1060x700")
         self.minsize(860, 580)
 
@@ -191,7 +306,7 @@ class App(tk.Tk):
         self.pruef_pfade: dict[str, Path] = {}
         self.zeilen: dict[str, dict] = {}
 
-        self.var_test = tk.BooleanVar(value=bool(self.k.einstellungen.get("testlauf", True)))
+        self.var_test = tk.BooleanVar(value=True if LIGHT else bool(self.k.einstellungen.get("testlauf", True)))
 
         stil = ttk.Style(self)
         stil.configure("Gross.TLabel", font=("Segoe UI", 13, "bold"))
@@ -200,9 +315,12 @@ class App(tk.Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=8, pady=8)
         self._tab_uebersicht()
-        self._tab_pruefen()
-        self._tab_analyse()
-        self._tab_schwaerzen()
+        if LIGHT:
+            self._tab_pruefen_light()
+        else:
+            self._tab_pruefen()
+            self._tab_analyse()
+            self._tab_schwaerzen()
         self._tab_einstellungen()
 
         self._verarbeitung_neu()
@@ -233,8 +351,12 @@ class App(tk.Tk):
 
         zeile = ttk.Frame(f)
         zeile.pack(fill="x", pady=(8, 4))
-        ttk.Checkbutton(zeile, text="Testlauf – nichts an Ninox senden", variable=self.var_test,
-                        command=self._testlauf_umgeschaltet).pack(side="left")
+        if LIGHT:
+            ttk.Label(zeile, text="Jedes Dokument wird unter „Prüfen“ von Hand kontrolliert und freigegeben.",
+                      style="Hinweis.TLabel").pack(side="left")
+        else:
+            ttk.Checkbutton(zeile, text="Testlauf – nichts an Ninox senden", variable=self.var_test,
+                            command=self._testlauf_umgeschaltet).pack(side="left")
         for name, key in [("Fehler", "fehler"), ("Prüfen", "pruefen"), ("Verarbeitet", "verarbeitet"), ("Eingang", "eingang")]:
             ttk.Button(zeile, text=f"📂 {name}", command=lambda k=key: self._ordner(k)).pack(side="right", padx=2)
 
@@ -307,6 +429,10 @@ class App(tk.Tk):
 
     def _zaehler_anzeigen(self):
         z = self.zaehler
+        if LIGHT:
+            self.lbl_zaehler.configure(
+                text=f"Heute: {z['ok']} freigegeben · {z['pruefen']} erkannt, noch zu prüfen · {z['fehler']} Fehler")
+            return
         modus = "TESTLAUF (ohne Ninox)" if self.var_test.get() else "Live mit Ninox"
         self.lbl_zaehler.configure(
             text=f"Heute: {z['ok']} abgelegt · {z['pruefen']} zu prüfen · {z['fehler']} Fehler      Modus: {modus}")
@@ -333,6 +459,12 @@ class App(tk.Tk):
             teile.append(("Grund", z["grund"], "warn"))
         if z.get("hinweise") and z.get("hinweise") != z.get("grund"):
             teile.append(("Hinweise", z["hinweise"].replace("; ", "\n"), "warn"))
+        if LIGHT:
+            teile += [(kern.FELD_TITEL[f], (de(z.get(f)) if f == "bescheiddatum" else z.get(f)) or "–", "")
+                      for f in kern.FELDER_LIGHT]
+            teile.append(("Eingangsdatei · Zeit", f"{z.get('eingang', '')} · {z.get('zeit', '')}", "feld"))
+            self._details_schreiben(teile)
+            return
         teile += [
             ("Name (aus dem Bescheid)", z.get("name") or "–", ""),
             ("Kundennummer", z.get("kundennummer") or "–", ""),
@@ -378,7 +510,8 @@ class App(tk.Tk):
         if not self.zeilen:
             return
         if not messagebox.askyesno("Liste leeren", f"Alle {len(self.zeilen)} Einträge aus der Liste entfernen?\n\n"
-                                   "Die PDFs in den Ordnern und die Daten in Ninox bleiben unverändert. "
+                                   "Die PDFs in den Ordnern" + ("" if LIGHT else " und die Daten in Ninox")
+                                   + " bleiben unverändert. "
                                    "Die bisherige Liste wird als Sicherung im Datenordner aufbewahrt."):
             return
         try:
@@ -462,16 +595,145 @@ class App(tk.Tk):
             row=len(felder) + 3, column=0, columnspan=2, sticky="w", pady=(10, 0))
         self._kategorien_setzen()
 
+    def _tab_pruefen_light(self):
+        """Light: links oben die Liste, links unten die PDF-Vorschau, rechts die Angaben zum Abgleichen."""
+        f = ttk.Frame(self.nb, padding=10)
+        self.nb.add(f, text="Prüfen")
+        self.tab_pruefen = f
+        aussen = ttk.PanedWindow(f, orient="horizontal")
+        aussen.pack(fill="both", expand=True)
+
+        links = ttk.PanedWindow(aussen, orient="vertical")
+        oben = ttk.Frame(links)
+        kopf = ttk.Frame(oben)
+        kopf.pack(fill="x")
+        ttk.Label(kopf, text="Zu prüfende Dokumente").pack(side="left")
+        ttk.Button(kopf, text="Aktualisieren", command=self._pruefen_aktualisieren).pack(side="right")
+        rahmen = ttk.Frame(oben)
+        rahmen.pack(fill="both", expand=True, pady=(6, 0))
+        self.tree_p = ttk.Treeview(rahmen, columns=("datei", "grund"), show="headings", height=6)
+        self.tree_p.heading("datei", text="Datei")
+        self.tree_p.heading("grund", text="Erkennung")
+        self.tree_p.column("datei", width=220)
+        self.tree_p.column("grund", width=300)
+        sb = ttk.Scrollbar(rahmen, orient="vertical", command=self.tree_p.yview)
+        self.tree_p.configure(yscrollcommand=sb.set)
+        self.tree_p.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree_p.tag_configure("fehlt", foreground="#b25e00")
+        self.tree_p.bind("<<TreeviewSelect>>", self._pruefen_auswahl)
+        self.tree_p.bind("<Double-1>", lambda _e: self._pruefen_pdf())
+        links.add(oben, weight=1)
+        self.vorschau = PdfVorschau(links)
+        links.add(self.vorschau, weight=3)
+        aussen.add(links, weight=3)
+
+        rechts = ttk.LabelFrame(aussen, text="Angaben abgleichen und freigeben", padding=10)
+        aussen.add(rechts, weight=1)
+        self.lbl_grund = ttk.Label(rechts, text="Links ein Dokument auswählen.", wraplength=280, style="Hinweis.TLabel")
+        self.lbl_grund.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.p_vars = {}
+        for i, key in enumerate(kern.FELDER_LIGHT, start=1):
+            ttk.Label(rechts, text=kern.FELD_TITEL[key]).grid(row=i, column=0, sticky="w", pady=3, padx=(0, 6))
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self.var_geprueft.set(False))
+            self.p_vars[key] = var
+            if key == "kategorie":
+                self.cmb_kat = ttk.Combobox(rechts, textvariable=var, state="readonly", width=26)
+                self.cmb_kat.grid(row=i, column=1, sticky="ew", pady=3)
+            elif key == "haus":
+                self.cmb_haus = ttk.Combobox(rechts, textvariable=var, width=26)
+                self.cmb_haus.grid(row=i, column=1, sticky="ew", pady=3)
+            else:
+                ttk.Entry(rechts, textvariable=var, width=28).grid(row=i, column=1, sticky="ew", pady=3)
+        n = len(kern.FELDER_LIGHT)
+        ttk.Label(rechts, text="Datum als TT.MM.JJJJ", style="Hinweis.TLabel").grid(row=n + 1, column=1, sticky="w")
+        self.var_geprueft = tk.BooleanVar(value=False)
+        self.cb_geprueft = ttk.Checkbutton(rechts, text="Ich habe alle Angaben mit dem Dokument verglichen",
+                                           variable=self.var_geprueft, command=self._freigabe_knopf)
+        self.cb_geprueft.grid(row=n + 2, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        self.btn_frei = ttk.Button(rechts, text="✔ Freigeben (benennen und ablegen)", command=self._pruefen_freigeben)
+        self.btn_frei.grid(row=n + 3, column=0, columnspan=2, sticky="ew", pady=2)
+        ttk.Button(rechts, text="Erneut erkennen", command=self._pruefen_erneut).grid(
+            row=n + 4, column=0, columnspan=2, sticky="ew", pady=2)
+        ttk.Button(rechts, text="PDF im PDF-Programm öffnen", command=self._pruefen_pdf).grid(
+            row=n + 5, column=0, columnspan=2, sticky="ew", pady=2)
+        ttk.Label(rechts, style="Hinweis.TLabel", wraplength=280, justify="left", text=(
+            "Die Vorschläge kommen aus der automatischen Erkennung und können falsch sein. "
+            "Bitte jede Angabe in der Vorschau nachsehen – erst dann freigeben. Freigegebene Dokumente liegen "
+            "benannt im Ordner „Verarbeitet“ und werden von dort in Ninox hochgeladen.")).grid(
+            row=n + 6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        rechts.columnconfigure(1, weight=1)
+        self._freigabe_knopf()
+        self._kategorien_setzen()
+
+    def _freigabe_knopf(self):
+        self.btn_frei.state(["!disabled"] if self.var_geprueft.get() else ["disabled"])
+
+    def _pruefen_freigeben(self):
+        pfad = self._pruefen_gewaehlt()
+        if not pfad:
+            return
+        if not self.var_geprueft.get():
+            messagebox.showinfo("Freigeben", "Bitte erst alle Angaben mit dem Dokument vergleichen und das Häkchen setzen.")
+            return
+        w = {k: v.get().strip() for k, v in self.p_vars.items()}
+        w["kundennummer"] = w["kundennummer"].replace(" ", "").upper()
+        if w["kundennummer"] and not kern.KDNR_FORMAT.match(w["kundennummer"]):
+            if not messagebox.askyesno("Kundennummer", f"„{w['kundennummer']}“ hat nicht das übliche Format "
+                                                       "123A456789.\nTrotzdem verwenden?"):
+                return
+        if w["bescheiddatum"]:
+            iso = kern.datum_iso(w["bescheiddatum"])
+            if not iso:
+                messagebox.showerror("Datum", f"„{w['bescheiddatum']}“ ist kein gültiges Datum (TT.MM.JJJJ).")
+                return
+            w["bescheiddatum"] = iso
+        haeuser = self._haus_namen()
+        if w["haus"] and haeuser and w["haus"] not in haeuser:
+            if not messagebox.askyesno("Haus", f"„{w['haus']}“ steht nicht in der Häuserliste.\nTrotzdem verwenden?"):
+                return
+        sel = self.tree_p.selection()
+        naechstes = self.tree_p.next(sel[0]) or self.tree_p.prev(sel[0]) if sel else None
+        naechste_datei = self.pruef_pfade.get(naechstes) if naechstes else None
+        self.vorschau.leeren()  # Datei freigeben, bevor sie verschoben wird
+
+        def fertig(name, fehler):
+            if fehler:
+                messagebox.showerror("Freigeben", str(fehler))
+                self.vorschau.laden(pfad)
+                return
+            self._pruefen_aktualisieren()
+            self.lbl_grund.configure(text=f"✔ Freigegeben als {name}")
+            for iid, p in self.pruef_pfade.items():
+                if p == naechste_datei:
+                    self.tree_p.selection_set(iid)
+                    self.tree_p.see(iid)
+                    self.after(100, lambda: self.lbl_grund.configure(
+                        text=f"✔ Freigegeben als {name}\n\nNächstes Dokument: {self.lbl_grund.cget('text')}"))
+
+        self._hintergrund(lambda: self.v.freigeben(pfad, w), fertig, "Gebe frei …")
+
+    def _haus_namen(self) -> list[str]:
+        st = self.k.cfg.get("_stammdaten") or {}
+        aus = [x.lower() for x in self.k.cfg["regeln"].get("haeuser_ausschliessen", [])]
+        return sorted({h.get("kuerzel") or h.get("name") for h in st.get("haeuser", [])
+                       if (h.get("kuerzel") or h.get("name")) and (h.get("kuerzel") or h.get("name")).lower() not in aus})
+
     def _kategorien_setzen(self):
         self.cmb_kat.configure(values=[k["name"] for k in self.k.cfg.get("kategorien", [])]
                                + [u["name"] for u in self.k.cfg.get("unterarten", [])])
+        if LIGHT:
+            self.cmb_haus.configure(values=self._haus_namen())
 
     def _pruefen_aktualisieren(self):
         self.tree_p.delete(*self.tree_p.get_children())
         self.pruef_pfade.clear()
         faelle = self.v.pruef_faelle() if self.v else []
         for pfad, info in faelle:
-            iid = self.tree_p.insert("", "end", values=(pfad.name, info.get("grund", "")))
+            grund = info.get("grund", "")
+            iid = self.tree_p.insert("", "end", values=(pfad.name, grund),
+                                     tags=(("fehlt",) if grund.startswith("fehlt") or ";" in grund else ()))
             self.pruef_pfade[iid] = pfad
         self.nb.tab(self.tab_pruefen, text=f"Prüfen ({len(faelle)})" if faelle else "Prüfen")
 
@@ -496,6 +758,10 @@ class App(tk.Tk):
         for key, var in self.p_vars.items():
             wert = erkannt.get(key) or ""
             var.set(iso_zu_de(wert) if key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum", "antragsdatum") else wert)
+        if LIGHT:
+            self.var_geprueft.set(False)
+            self._freigabe_knopf()
+            self.vorschau.laden(pfad)
 
     def _pruefen_pdf(self):
         pfad = self._pruefen_gewaehlt()
@@ -532,6 +798,8 @@ class App(tk.Tk):
 
     def _pruefen_erneut(self):
         pfad = self._pruefen_gewaehlt()
+        if pfad and LIGHT:
+            self.vorschau.leeren()
         if pfad:
             self._hintergrund(lambda: self.v.datei(pfad), self._pruefen_fertig, "Verarbeite erneut …")
 
@@ -539,6 +807,12 @@ class App(tk.Tk):
         self._pruefen_aktualisieren()
         for var in self.p_vars.values():
             var.set("")
+        if LIGHT:
+            if fehler or ergebnis == "fehler":
+                messagebox.showerror("Fehler", str(fehler or "Technischer Fehler – Details im Protokoll auf der Übersicht."))
+            else:
+                self.lbl_grund.configure(text="Neu erkannt – das Dokument steht wieder in der Liste.")
+            return
         if fehler:
             messagebox.showerror("Fehler", str(fehler))
         elif ergebnis == "ok":
@@ -735,6 +1009,31 @@ class App(tk.Tk):
         feld(r, 3, "Fehler", ("ordner", "fehler"), wahl="ordner")
         feld(r, 4, "Original-Archiv", ("ordner", "archiv_original"), wahl="ordner", hinweis="leer = Originale löschen")
 
+        if LIGHT:
+            r = ttk.LabelFrame(f, text="Häuser (für Erkennung und Auswahlliste)", padding=8)
+            r.pack(fill="x", pady=4)
+            ttk.Button(r, text="Häuserliste laden (CSV-Export aus Ninox) …", command=self._haeuser_csv).grid(
+                row=0, column=0, sticky="w")
+            self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700)
+            self.lbl_stamm.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        else:
+            self._einstellungen_ninox(f, feld)
+
+        r = ttk.LabelFrame(f, text="Texterkennung (lokal, deutsch)", padding=8)
+        r.pack(fill="x", pady=4)
+        schalter(r, 0, "Texterkennung verwenden (aus, wenn der Scanner schon durchsuchbare PDFs liefert)", ("ocr", "aktiv"))
+        if not LIGHT:
+            feld(r, 1, "Sprache", ("ocr", "sprache"), hinweis="deu")
+        feld(r, 2, "tesseract.exe", ("ocr", "tesseract"), wahl="datei", hinweis="leer = mitgelieferte Version")
+        try:
+            gefunden = kern.tesseract_finden(self.k.cfg)
+        except RuntimeError:
+            gefunden = "NICHT GEFUNDEN"
+        self.lbl_tess = ttk.Label(r, text=f"Verwendet: {gefunden}", style="Hinweis.TLabel")
+        self.lbl_tess.grid(row=3, column=1, sticky="w")
+        self._einstellungen_rest(f, feld, schalter)
+
+    def _einstellungen_ninox(self, f, feld):
         r = ttk.LabelFrame(f, text="Ninox", padding=8)
         r.pack(fill="x", pady=4)
         feld(r, 0, "API-Adresse", ("ninox", "base_url"), hinweis="Private Cloud: https://NAME.ninoxdb.com/v1")
@@ -749,18 +1048,7 @@ class App(tk.Tk):
         self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel")
         self.lbl_stamm.grid(row=5, column=1, sticky="w")
 
-        r = ttk.LabelFrame(f, text="Texterkennung (lokal)", padding=8)
-        r.pack(fill="x", pady=4)
-        schalter(r, 0, "Texterkennung verwenden (aus, wenn der Scanner schon durchsuchbare PDFs liefert)", ("ocr", "aktiv"))
-        feld(r, 1, "Sprache", ("ocr", "sprache"), hinweis="deu")
-        feld(r, 2, "tesseract.exe", ("ocr", "tesseract"), wahl="datei", hinweis="leer = mitgelieferte Version")
-        try:
-            gefunden = kern.tesseract_finden(self.k.cfg)
-        except RuntimeError:
-            gefunden = "NICHT GEFUNDEN"
-        self.lbl_tess = ttk.Label(r, text=f"Verwendet: {gefunden}", style="Hinweis.TLabel")
-        self.lbl_tess.grid(row=3, column=1, sticky="w")
-
+    def _einstellungen_rest(self, f, feld, schalter):
         r = ttk.LabelFrame(f, text="Lokale KI (optional, über Ollama)", padding=8)
         r.pack(fill="x", pady=4)
         schalter(r, 0, "KI nutzen, wenn die Regeln nicht alles finden", ("ki", "aktiv"))
@@ -820,7 +1108,9 @@ class App(tk.Tk):
     def _stammdaten_text(self) -> str:
         st = self.k.cfg.get("_stammdaten") or {}
         if not st:
-            return "Stammdaten: noch nicht geladen"
+            return "Häuser: noch nicht geladen" if LIGHT else "Stammdaten: noch nicht geladen"
+        if LIGHT:
+            return f"{len(st.get('haeuser', []))} Häuser geladen am {st.get('geladen', '?')}: " + ", ".join(self._haus_namen())
         haeuser = ", ".join(h.get("kuerzel") or h.get("name") or "?" for h in st.get("haeuser", [])[:8])
         rl = st.get("rechtslage") or []
         neueste = max(rl, key=lambda r: r["ab"]) if rl else None
@@ -881,6 +1171,21 @@ class App(tk.Tk):
                      "der Abgleich mit dem Bedarf für den Lebensunterhalt geht aber erst mit Beträgen.")
         messagebox.showinfo("Stammdaten", text)
 
+    def _haeuser_csv(self):
+        """Light: nur die Häuser-Tabelle (CSV-Export aus Ninox) – für Haus-Erkennung und Auswahlliste."""
+        haus = filedialog.askopenfilename(title="Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
+        if not haus:
+            return
+        try:
+            kern.stammdaten_aus_csv(Path(haus), None, self._formular_cfg(), self.k.ordner)
+        except Exception as fehler:  # noqa: BLE001
+            messagebox.showerror("Häuser", f"CSV konnte nicht gelesen werden:\n{fehler}")
+            return
+        self.k.laden()
+        self._konfiguration_anwenden()
+        self.lbl_stamm.configure(text=self._stammdaten_text())
+        messagebox.showinfo("Häuser", self._stammdaten_text())
+
     def _ninox_testen(self):
         cfg = self._formular_cfg()
         self._hintergrund(lambda: kern.Ninox(cfg).verbindung_testen(),
@@ -927,7 +1232,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ Verarbeitung & Überwachung
     def _verarbeitung_neu(self):
         try:
-            self.v = kern.Verarbeitung(self.k.cfg, testlauf=self.var_test.get(),
+            self.v = kern.Verarbeitung(self.k.cfg, testlauf=LIGHT or self.var_test.get(),
                                        melden=lambda z: self.q.put(("eintrag", z)))
         except Exception as ex:
             self.v = None
@@ -1055,9 +1360,22 @@ def selbsttest(app: "App", ziel: Path) -> None:
         if kinder:
             app.tree.selection_set(kinder[0])
             app._details_zeigen()
+        vorschau = "-"
+        if LIGHT:
+            app.nb.select(app.tab_pruefen)
+            app.update()
+            faelle = app.tree_p.get_children()
+            if faelle:
+                app.tree_p.selection_set(faelle[0])
+                app._pruefen_auswahl()
+                app.update()
+                vorschau = app.vorschau.lbl.cget("text")
+                if not vorschau.startswith("Seite"):
+                    raise RuntimeError(f"PDF-Vorschau fehlgeschlagen: {vorschau}")
         app._stammdaten_text()
         app.update()
-        ziel.write_text(f"OK\nEinträge: {len(kinder)}\nDatenordner: {app.k.ordner}\nMeldung: {app.k.migriert or '-'}\n",
+        ziel.write_text(f"OK\nAusgabe: {kern.ANZEIGE_NAME}\nEinträge: {len(kinder)}\nVorschau: {vorschau}\n"
+                        f"Datenordner: {app.k.ordner}\nMeldung: {app.k.migriert or '-'}\n",
                         encoding="utf-8")
     except Exception:
         ziel.write_text("FEHLER\n" + traceback.format_exc(), encoding="utf-8")

@@ -1,4 +1,4 @@
-# Baut BAB-O-BOX.exe in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
+# Baut BAB-O-BOX Pro und Light in der Cloud (GitHub Actions) – ganz ohne eigenen Windows-Build-PC.
 # Repository anlegen, alle Dateien hochladen, unter "Actions" den Lauf starten.
 # Jeder Push auf main erzeugt automatisch ein Release mit fertigem ZIP (Seite "Releases").
 name: Windows-Build
@@ -33,24 +33,27 @@ jobs:
           $td = "C:\Program Files\Tesseract-OCR\tessdata"
           Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/deu.traineddata" -OutFile "$td\deu.traineddata"
 
-      - name: Programm bauen
-        run: >
-          pyinstaller --noconfirm --clean --windowed --name "BAB-O-BOX"
-          --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt"
-          --collect-all pypdfium2 --collect-all pypdfium2_raw
-          bab_gui.py
+      - name: Programme bauen (Pro und Light)
+        shell: pwsh
+        run: |
+          foreach ($a in @(@("BAB-O-BOX-Pro","bab_gui.py"), @("BAB-O-BOX-Light","bab_light.py"))) {
+            pyinstaller --noconfirm --clean --windowed --name $a[0] --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt" --collect-all pypdfium2 --collect-all pypdfium2_raw $a[1]
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
 
-      - name: Tesseract beilegen
+      - name: Tesseract beilegen (Light nur deutsch)
         shell: pwsh
         run: |
           $src = "C:\Program Files\Tesseract-OCR"
-          $dst = "dist\BAB-O-BOX\tesseract"
-          robocopy $src $dst /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP
-          foreach ($l in "deu","eng","osd") { if (Test-Path "$src\tessdata\$l.traineddata") { Copy-Item "$src\tessdata\$l.traineddata" "$dst\tessdata\" } }
-          Copy-Item LIESMICH_ANWENDER.md dist\BAB-O-BOX\
+          foreach ($a in @(@("BAB-O-BOX-Pro", @("deu","eng","osd"), "LIESMICH_ANWENDER.md"), @("BAB-O-BOX-Light", @("deu"), "LIESMICH_LIGHT.md"))) {
+            $dst = "dist\$($a[0])\tesseract"
+            robocopy $src $dst /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP
+            foreach ($l in $a[1]) { if (Test-Path "$src\tessdata\$l.traineddata") { Copy-Item "$src\tessdata\$l.traineddata" "$dst\tessdata\" } }
+            Copy-Item $a[2] "dist\$($a[0])\"
+          }
           exit 0
 
-      - name: Selbsttest (Start wie bei einem Update von BAB-Eingang)
+      - name: Selbsttest Pro (Start wie bei einem Update von BAB-Eingang)
         shell: pwsh
         run: |
           $env:APPDATA = "$env:RUNNER_TEMP\appdata"
@@ -59,28 +62,51 @@ jobs:
           Copy-Item regeln_alt\standard_2a78395.toml "$alt\config.toml"
           '{"testlauf": true, "ordner": {"eingang": "' + ($env:RUNNER_TEMP -replace '\\','/') + '/scan"}}' | Set-Content "$alt\einstellungen.json"
           "zeit;eingang;ergebnis;status;grund;kundennummer`n2026-10-20 10:00:00;a.pdf;b.pdf;ok;;022P425485" | Set-Content "$alt\protokoll.csv"
-          $ergebnis = "$env:RUNNER_TEMP\selbsttest.txt"
-          $p = Start-Process -FilePath "dist\BAB-O-BOX\BAB-O-BOX.exe" -ArgumentList "--selbsttest", $ergebnis -PassThru
+          $ergebnis = "$env:RUNNER_TEMP\selbsttest_pro.txt"
+          $p = Start-Process -FilePath "dist\BAB-O-BOX-Pro\BAB-O-BOX-Pro.exe" -ArgumentList "--selbsttest", $ergebnis -PassThru
           if (-not $p.WaitForExit(90000)) { Stop-Process $p -Force; Write-Host "ZEITÜBERSCHREITUNG"; }
           Write-Host "--- Ergebnis ---"
           if (Test-Path $ergebnis) { Get-Content $ergebnis } else { Write-Host "keine Ergebnisdatei" }
-          foreach ($f in "$env:APPDATA\BAB-O-BOX\absturz.txt", "dist\BAB-O-BOX\absturz.txt", "$env:APPDATA\BAB-O-BOX\bab_eingang.log") {
+          foreach ($f in "$env:APPDATA\BAB-O-BOX\absturz.txt", "dist\BAB-O-BOX-Pro\absturz.txt", "$env:APPDATA\BAB-O-BOX\bab_eingang.log") {
             if (Test-Path $f) { Write-Host "--- $f ---"; Get-Content $f }
           }
           if (-not ((Test-Path $ergebnis) -and ((Get-Content $ergebnis -First 1) -eq "OK"))) { exit 1 }
 
+      - name: Selbsttest Light (mit PDF-Vorschau)
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata_light"
+          $d = "$env:APPDATA\BAB-O-BOX Light"
+          $pr = "$env:RUNNER_TEMP\light_pruefen"
+          New-Item -ItemType Directory -Force $d, $pr | Out-Null
+          python -c "import sys; from pypdf import PdfWriter; w=PdfWriter(); w.add_blank_page(595,842); w.add_blank_page(595,842); w.write(sys.argv[1])" "$pr\test.pdf"
+          '{"grund": "fehlt: Haus", "erkannt": {"kundennummer": "123A456789", "name": "Test", "haus": null, "kategorie": "Bewilligung", "bescheiddatum": "2026-10-01"}}' | Set-Content "$pr\test.grund.json"
+          '{"ordner": {"eingang": "' + ($env:RUNNER_TEMP -replace '\\','/') + '/scan_light", "pruefen": "' + ($pr -replace '\\','/') + '"}}' | Set-Content "$d\einstellungen.json"
+          $ergebnis = "$env:RUNNER_TEMP\selbsttest_light.txt"
+          $p = Start-Process -FilePath "dist\BAB-O-BOX-Light\BAB-O-BOX-Light.exe" -ArgumentList "--selbsttest", $ergebnis -PassThru
+          if (-not $p.WaitForExit(90000)) { Stop-Process $p -Force; Write-Host "ZEITÜBERSCHREITUNG"; }
+          Write-Host "--- Ergebnis ---"
+          if (Test-Path $ergebnis) { Get-Content $ergebnis } else { Write-Host "keine Ergebnisdatei" }
+          foreach ($f in "$d\absturz.txt", "dist\BAB-O-BOX-Light\absturz.txt", "$d\bab_eingang.log") {
+            if (Test-Path $f) { Write-Host "--- $f ---"; Get-Content $f }
+          }
+          if (-not ((Test-Path $ergebnis) -and ((Get-Content $ergebnis -First 1) -eq "OK"))) { exit 1 }
+          if (-not (Select-String -Path $ergebnis -Pattern "Vorschau: Seite 1 von 2" -Quiet)) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: BAB-O-BOX-Windows
-          path: dist/BAB-O-BOX
+          path: dist
 
-      - name: Release mit ZIP anlegen
+      - name: Release mit ZIPs anlegen
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # ZIP so packen, dass BAB-O-BOX.exe als LETZTE Datei entpackt wird – sonst kann man sie starten,
+          # ZIP so packen, dass die exe als LETZTE Datei entpackt wird – sonst kann man sie starten,
           # bevor Windows mit dem Entpacken fertig ist (dann fehlen z. B. die Tk-Dateien)
-          python -c "import zipfile,pathlib; b=pathlib.Path('dist'); fs=sorted((p for p in (b/'BAB-O-BOX').rglob('*') if p.is_file()), key=lambda p:(p.name=='BAB-O-BOX.exe', str(p))); z=zipfile.ZipFile('BAB-O-BOX-Windows.zip','w',zipfile.ZIP_DEFLATED); [z.write(p, p.relative_to(b).as_posix()) for p in fs]; z.close(); print(len(fs),'Dateien, letzte:', fs[-1])"
-          gh release create "v1.0.${{ github.run_number }}" BAB-O-BOX-Windows.zip --target "${{ github.sha }}" --title "BAB-O-BOX 1.0.${{ github.run_number }}" --notes "ZIP herunterladen, entpacken, BAB-O-BOX.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."
+          foreach ($n in "BAB-O-BOX-Pro","BAB-O-BOX-Light") {
+            python -c "import sys,zipfile,pathlib; n=sys.argv[1]; b=pathlib.Path('dist'); fs=sorted((p for p in (b/n).rglob('*') if p.is_file()), key=lambda p:(p.name==n+'.exe', str(p))); z=zipfile.ZipFile(n+'-Windows.zip','w',zipfile.ZIP_DEFLATED); [z.write(p, p.relative_to(b).as_posix()) for p in fs]; z.close(); print(n, len(fs),'Dateien, letzte:', fs[-1])" $n
+          }
+          gh release create "v1.0.${{ github.run_number }}" BAB-O-BOX-Pro-Windows.zip BAB-O-BOX-Light-Windows.zip --target "${{ github.sha }}" --title "BAB-O-BOX 1.0.${{ github.run_number }} (Pro und Light)" --notes "Zwei Ausgaben: **Pro** (automatische Ablage in Ninox) und **Light** (ohne Ninox, jedes Dokument wird von Hand geprüft und freigegeben). Passendes ZIP herunterladen, vollständig entpacken, exe starten. Kurzanleitung liegt jeweils im Ordner."

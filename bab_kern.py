@@ -34,10 +34,18 @@ from pypdf import PdfReader
 
 log = logging.getLogger("bab")
 
-APP_NAME = "BAB-O-BOX"
+import bab_edition  # noqa: E402
+
+LIGHT = bab_edition.EDITION == "light"
+APP_NAME = "BAB-O-BOX Light" if LIGHT else "BAB-O-BOX"          # Datenordner unter %APPDATA% und Autostart-Name
+ANZEIGE_NAME = "BAB-O-BOX Light" if LIGHT else "BAB-O-BOX Pro"
 ALTER_APP_NAME = "BAB-Eingang"
 FELDER = ["name", "kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag", "geburtsdatum",
           "antragsdatum", "haus"]
+# Light erfasst bewusst nur diese Angaben (kein Geburtsdatum, keine Beträge/Zeiträume)
+FELDER_LIGHT = ["kundennummer", "name", "haus", "kategorie", "bescheiddatum"]
+FELD_TITEL = {"kundennummer": "Kundennummer", "name": "Name", "haus": "Haus", "kategorie": "Art",
+              "bescheiddatum": "Bescheiddatum"}
 MONATE = {"januar": 1, "februar": 2, "märz": 3, "marz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6, "juli": 7,
           "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12}
 DATUM_RE = r"\d{1,2}\.\d{1,2}\.\d{4}"
@@ -66,7 +74,7 @@ def daten_ordner() -> Path:
     basis = Path(os.environ.get("APPDATA") or (Path.home() / ".config"))
     p = basis / APP_NAME
     alt = basis / ALTER_APP_NAME
-    if not p.exists() and alt.is_dir():  # Umbenennung BAB-Eingang -> BAB-O-BOX: Daten mitnehmen
+    if not LIGHT and not p.exists() and alt.is_dir():  # Umbenennung BAB-Eingang -> BAB-O-BOX: Daten mitnehmen
         try:
             shutil.copytree(alt, p)
         except Exception:
@@ -76,7 +84,7 @@ def daten_ordner() -> Path:
 
 
 def standard_einstellungen() -> dict:
-    basis = Path.home() / "Documents" / "BAB"
+    basis = Path.home() / "Documents" / ("BAB-Light" if LIGHT else "BAB")
     return {
         "ordner": {
             "eingang": str(basis / "Scan-Eingang"),
@@ -1004,7 +1012,7 @@ def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dic
     return daten
 
 
-def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path,
+def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path | None, cfg: dict, ordner: Path,
                        rechtslage_csv: Path | None = None) -> dict:
     """Ninox-Exporte (CSV, Semikolon) der Häuser- und Kostensatz-Tabelle einlesen – ohne API-Zugang."""
     def lesen(p: Path) -> list[dict]:
@@ -1023,7 +1031,8 @@ def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path,
         if nr and str(nr).strip().isdigit():
             zeile["id"] = int(nr)
     alt = (cfg.get("_stammdaten") or {}).get("rechtslage")
-    daten = stammdaten_aufbereiten(haeuser, lesen(ks_csv), cfg, lesen(rechtslage_csv) if rechtslage_csv else None)
+    daten = stammdaten_aufbereiten(haeuser, lesen(ks_csv) if ks_csv else [], cfg,
+                                   lesen(rechtslage_csv) if rechtslage_csv else None)
     if not rechtslage_csv and alt:
         daten["rechtslage"] = alt  # früher eingelesene Rechtslage behalten
     daten["quelle"] = "CSV"
@@ -1448,6 +1457,16 @@ class Ninox:
 
 # =========================================================================== Verarbeitung
 
+def light_grund(e: "Ergebnis") -> str:
+    """Light: jedes Dokument geht in „Prüfen“. Der Grund sagt, was fehlt bzw. unsicher ist."""
+    fehlend = [FELD_TITEL[f] for f in FELDER_LIGHT if not getattr(e, f)]
+    unsicher = [h for h in (e.hinweise or "").split("; ")
+                if h and re.search(r"Kundennummer|Haus nicht eindeutig|mehrere Personen|Name", h)
+                and "Kostensatz" not in h]
+    teile = (["fehlt: " + ", ".join(fehlend)] if fehlend else ["alles erkannt – bitte abgleichen"]) + unsicher
+    return "; ".join(teile)
+
+
 class Verarbeitung:
     """Eine Instanz pro Konfiguration. Thread-sicher: es läuft immer nur ein Dokument gleichzeitig."""
 
@@ -1467,7 +1486,7 @@ class Verarbeitung:
             if p:
                 p.mkdir(parents=True, exist_ok=True)
         self.protokoll = Path(o["protokoll"])
-        self.ninox = None if testlauf else Ninox(cfg)
+        self.ninox = None if (testlauf or LIGHT) else Ninox(cfg)
         # Stammdaten werden NICHT hier geladen (würde den Programmstart blockieren),
         # sondern über stammdaten_auffrischen() im Hintergrund bzw. im Überwachungslauf.
 
@@ -1510,6 +1529,8 @@ class Verarbeitung:
             pflicht = self.cfg["regeln"]["pflichtfelder"]
             if e.fehlend(pflicht) and self.cfg["ki"].get("aktiv", False) and not vorgaben:
                 e = ki_ergaenzen(text, e, self.cfg)
+            if LIGHT:
+                raise PruefFall(light_grund(e))
             erkanntes_geburtsdatum = e.geburtsdatum
             if vorgaben:
                 if any(vorgaben.get(f) and vorgaben.get(f) != getattr(e, f) for f in ("zeitraum_von", "zeitraum_bis", "betrag")):
@@ -1577,7 +1598,8 @@ class Verarbeitung:
             quelle = ocr_pdf if ocr_pdf.exists() else original
             ziel = eindeutiger_pfad(self.pruefen / original.name)
             shutil.move(quelle, ziel)
-            grund_pfad(ziel).write_text(json.dumps({"grund": str(grund), "erkannt": asdict(e)},
+            erkannt = {f: getattr(e, f) for f in FELDER_LIGHT} if LIGHT else asdict(e)
+            grund_pfad(ziel).write_text(json.dumps({"grund": str(grund), "erkannt": erkannt},
                                                    ensure_ascii=False, indent=2), encoding="utf-8")
             if quelle != original:
                 self._original_wegraeumen(original)
@@ -1594,6 +1616,25 @@ class Verarbeitung:
             log.exception("-> Fehler bei %s", original.name)
             return "fehler"
 
+    def freigeben(self, pfad: Path, werte: dict) -> str:
+        """Light: Dokument aus „Prüfen“ mit den von Hand bestätigten Angaben benennen und nach „Verarbeitet“ legen."""
+        with self.sperre:
+            fehlend = [FELD_TITEL[f] for f in FELDER_LIGHT if not (werte.get(f) or "").strip()]
+            if fehlend:
+                raise ValueError("Bitte noch ausfüllen: " + ", ".join(fehlend))
+            e = Ergebnis(**{f: werte[f].strip() for f in FELDER_LIGHT}, quelle="manuell")
+            dateiname = sicherer_dateiname(self.cfg["dateiname"]["schema"].format(
+                name=re.sub(r",\s*", "_", e.name), ninox_name=e.name, haus=e.haus, kategorie=e.kategorie,
+                datum=e.bescheiddatum, kundennummer=e.kundennummer, geburtsdatum="", von="", bis=""))
+            if not dateiname.lower().endswith(".pdf"):
+                dateiname += ".pdf"
+            ziel = eindeutiger_pfad(self.verarbeitet / dateiname)
+            shutil.move(pfad, ziel)
+            grund_pfad(pfad).unlink(missing_ok=True)
+            self._protokoll(pfad.name, ziel.name, "ok", "", e)
+            log.info("Freigegeben: %s", ziel.name)
+            return ziel.name
+
     def _original_wegraeumen(self, original: Path) -> None:
         if not original.exists():
             return
@@ -1604,9 +1645,11 @@ class Verarbeitung:
 
     def _protokoll(self, ein: str, aus: str, status: str, grund: str, e: Ergebnis) -> None:
         zeile = {"zeit": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eingang": ein, "ergebnis": aus,
-                 "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in FELDER},
-                 "zeitraeume": e.zeitraeume, "kostensatz": e.kostensatz_info, "notiz": e.notiz, "antragsart_hinweis": e.antragsart_hinweis,
-                 "hinweise": e.hinweise, "quelle": e.quelle}
+                 "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in (FELDER_LIGHT if LIGHT else FELDER)}}
+        if not LIGHT:
+            zeile.update({"zeitraeume": e.zeitraeume, "kostensatz": e.kostensatz_info, "notiz": e.notiz,
+                          "antragsart_hinweis": e.antragsart_hinweis})
+        zeile.update({"hinweise": e.hinweise, "quelle": e.quelle})
         if self.protokoll.exists():
             with open(self.protokoll, encoding="utf-8-sig", newline="") as fh:
                 kopf = next(csv.reader(fh, delimiter=";"), [])

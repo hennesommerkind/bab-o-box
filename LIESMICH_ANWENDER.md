@@ -1,44 +1,52 @@
-# BAB-O-BOX – Kurzanleitung
+# BAB-O-BOX Pro – Kurzanleitung
+
+Die Pro-Ausgabe erkennt Bescheide und legt sie automatisch in Ninox ab. Wer jedes Dokument selbst prüfen und
+freigeben möchte, nimmt **BAB-O-BOX Light** (eigenes ZIP, ohne Ninox-Anbindung).
 
 ## Starten
-Copy the `BAB-O-BOX` folder to your PC (e.g. `C:\Programme\BAB-O-BOX` or a network drive) and launch **BAB-O-BOX.exe**. No installation is needed.
+Den Ordner `BAB-O-BOX-Pro` auf den PC kopieren (z. B. `C:\Programme\BAB-O-BOX-Pro` oder ein Netzlaufwerk) und
+**BAB-O-BOX-Pro.exe** starten. Eine Installation ist nicht nötig.
 
-## Set up once (tab "Einstellungen")
-1. **Ordner**: set "Scan-Eingang" to the folder the scanner saves to. The other folders are created automatically.
-2. **Ninox**: enter the API key (in Ninox: Integrationen → API-Schlüssel generieren).
-   Leave Team-ID and Datenbank-ID empty and click **Verbindung testen**. The app then shows the available IDs to copy in.
-   Once the Datenbank-ID is filled in, "Testen" shows the tables and their fields. You need these for the rules file (see below).
+## Einmal einrichten (Reiter „Einstellungen“)
+1. **Ordner**: „Scan-Eingang“ auf den Ordner setzen, in den der Scanner speichert. Die übrigen Ordner werden automatisch angelegt.
+2. **Ninox**: API-Schlüssel eintragen (in Ninox: Integrationen → API-Schlüssel erzeugen).
+   Team-ID und Datenbank-ID leer lassen und **Verbindung testen** klicken – die App zeigt die verfügbaren IDs zum Übernehmen.
+   Ist die Datenbank-ID eingetragen, zeigt „Testen“ die Tabellen und Felder.
 3. **Speichern**.
-4. Under "Allgemein", optionally enable **Mit Windows starten** and **Überwachung beim Programmstart automatisch starten**.
+4. Unter „Allgemein“ bei Bedarf **Mit Windows starten** und **Überwachung beim Programmstart automatisch starten** einschalten.
 
-If table or field names in your Ninox differ from the defaults, "Verbindung testen" lists them. Enter only the differences in **Eigene Regeln bearbeiten** (file `eigene_regeln.toml`), then "Konfiguration neu laden". The standard rules arrive with every update automatically; your own rules are never overwritten.
-5. **Stammdaten laden (Häuser, Kostensätze)**: reads houses with addresses and cost rates from Ninox (afterwards automatically once a day). The app then recognizes the house from the address in the notice and picks that house's cost rate for each approval period.
-Tip: if the resident table has a **Geburtsdatum** field, enter its name there. The app then also finds residents whose customer number is unreadable, and it checks that customer number and birth date match – this prevents a notice from being filed under the wrong person.
+Weichen Tabellen- oder Feldnamen in eurem Ninox ab, listet „Verbindung testen“ sie auf. Nur die Abweichungen in
+**Eigene Regeln bearbeiten** (Datei `eigene_regeln.toml`) eintragen, dann „Konfiguration neu laden“. Die Standardregeln
+kommen mit jedem Update automatisch, eigene Regeln werden nie überschrieben.
 
-## Testing
-1. Tab **Analyse** → "PDF auswählen …" with a real notice. This shows what was recognized. Nothing is changed.
-2. On the Übersicht tab, leave **Testlauf** ticked and click "Überwachung starten". Files get sorted and renamed, but nothing is sent to Ninox.
-3. Once everything fits: untick Testlauf. From then on, notices are filed in Ninox.
+5. **Stammdaten laden**: holt Häuser, Kostensätze und Rechtslage aus Ninox (danach automatisch einmal täglich).
+   Ohne API-Zugang: **… aus CSV-Export** und nacheinander den Export der Häuser, der Kostensätze und (optional) der Rechtslage wählen.
 
-## Day-to-day
-- Just scan. The app picks up new PDFs from the input folder on its own.
-- **Übersicht** shows everything that was processed. Clicking a row shows what was read out on the right (name, customer number, dates, approval periods, notes); double-clicking opens the PDF.
-  **Auswahl entfernen** (or the Del key) removes selected rows from the list, **Liste leeren …** clears it completely. Only the list changes – PDFs and Ninox stay untouched; a backup of the old list is kept in the data folder.
-- File names contain the name as read from the notice (e.g. `022P425485_BAB-Änderung_Mustermann_Max.pdf`). The name is only used for the file name – matching in Ninox always runs via customer number and birth date.
-- **Prüfen (n)**: notices that weren't recognized clearly. Select one, check or correct the fields on the right, then **Mit diesen Angaben ablegen**. The reason tells you what's missing – e.g. "Kundennummer nicht eindeutig: 022P425485, 022P426485" means the number was read in two different ways; look it up in the PDF and enter it.
-  If the customer number was simply missing in Ninox, add it there and click **Erneut automatisch versuchen**.
-- The notice is attached to the **Antrag whose date matches** "auf dem am … gestellten Antrag" (±14 days). The Antragsart (EB, WB, …) therefore comes from the Antrag in Ninox. If no matching Antrag exists and there are several, the notice goes to "Prüfen".
-- Notices that say benefits after a certain date are only paid once the last exam day is proven get a note in the Bescheid's "Notiz" field.
-- Files in **Fehler** have a technical problem (e.g. no network). Once it's fixed, move them back into the input folder.
+## Testen
+1. Reiter **Analyse** → „PDF auswählen …“ mit einem echten Bescheid. Zeigt, was erkannt wurde – es wird nichts verändert.
+2. Auf der Übersicht **Testlauf** angehakt lassen und „Überwachung starten“. Dateien werden sortiert und umbenannt, aber nichts an Ninox gesendet.
+3. Passt alles: Testlauf abhaken. Ab dann werden Bescheide in Ninox abgelegt.
 
-## Pseudonymizing notices (tab "Schwärzen")
-For passing notices on to development without personal data. Requires the local AI (Ollama, see Einstellungen).
-1. Choose a folder with PDF notices and an output folder (not inside the notices folder).
-2. "Pseudonymisieren" – names, customer numbers, day/month of birth, IBAN, private addresses, employers, phone numbers and e-mail addresses are replaced with placeholder values in the same format. On a laptop without a graphics card this takes roughly 2–6 minutes per notice.
-3. Read the text files in `zum_Senden` (warnings are listed in `bericht.txt`) and only then pass them on. File names are neutral (`bescheid_001.txt` …).
-4. `NUR_LOKAL\zuordnung.csv` contains the mapping to the real data – never pass it on, delete it after checking.
+## Im Alltag
+- Einfach scannen. Die App holt neue PDFs selbstständig aus dem Eingangsordner.
+- **Übersicht** zeigt alles Verarbeitete. Ein Klick zeigt rechts die ausgelesenen Angaben, ein Doppelklick öffnet das PDF.
+  **Auswahl entfernen** (oder Entf) nimmt Zeilen aus der Liste, **Liste leeren …** leert sie ganz. Nur die Liste ändert sich – PDFs und Ninox bleiben unberührt.
+- Dateinamen enthalten den Namen aus dem Bescheid (z. B. `022P425485_BAB-Änderung_Mustermann_Max.pdf`). Der Name dient nur dem Dateinamen – in Ninox wird immer über Kundennummer und Geburtsdatum zugeordnet.
+- **Prüfen (n)**: Bescheide, die nicht eindeutig erkannt wurden. Auswählen, Angaben rechts prüfen oder korrigieren, dann **Mit diesen Angaben ablegen**.
+  Fehlte nur die Kundennummer in Ninox: dort nachtragen und **Erneut automatisch versuchen**.
+- Der Bescheid wird an den **Antrag mit passendem Antragsdatum** gehängt (±14 Tage). Die Antragsart (EB, WB …) kommt deshalb vom Antrag in Ninox.
+- Kostensatz: Die App rechnet „Bedarf für den Lebensunterhalt“ minus Pauschale für sonstige Bedürfnisse (aus der Rechtslage) und sucht den passenden Kostensatz des Hauses.
+- **Anhörung, Mitwirkung und Anforderungsschreiben** werden erkannt, aber nicht automatisch abgelegt – sie landen unter „Prüfen“.
+- Dateien in **Fehler** haben ein technisches Problem (z. B. kein Netz). Danach zurück in den Eingangsordner legen.
 
-## Data protection
-Text recognition runs entirely on this PC. Documents are only sent to Ninox.
-Settings (including the API key), the log and the processing record are stored under `%APPDATA%\BAB-O-BOX`. The PC should be used by authorized staff only.
-Delete the original archive regularly, or leave the "Original-Archiv" field empty.
+## Bescheide pseudonymisieren (Reiter „Schwärzen“)
+Zum Weitergeben an die Entwicklung ohne personenbezogene Daten. Braucht die lokale KI (Ollama, siehe Einstellungen).
+1. Ordner mit PDF-Bescheiden und einen Ausgabeordner wählen (nicht innerhalb des Bescheid-Ordners).
+2. „Pseudonymisieren“ – Namen, Kundennummern, Geburtsdaten, IBAN, private Anschriften, Betriebe, Telefon und E-Mail werden durch Fantasiewerte im gleichen Format ersetzt.
+3. Die Textdateien in `zum_Senden` lesen (Warnungen stehen in `bericht.txt`) und erst dann weitergeben.
+4. `NUR_LOKAL\zuordnung.csv` enthält die Zuordnung zu den echten Daten – nie weitergeben, nach der Kontrolle löschen.
+
+## Datenschutz
+Die Texterkennung läuft vollständig auf diesem PC. Dokumente gehen nur an Ninox.
+Einstellungen (inkl. API-Schlüssel), Protokoll und Verarbeitungsliste liegen unter `%APPDATA%\BAB-O-BOX`.
+Das Original-Archiv regelmäßig leeren oder das Feld „Original-Archiv“ leer lassen.

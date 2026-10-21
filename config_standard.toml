@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 9
+version = 10
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -132,6 +132,14 @@ betrag = [
 name    = 'Anhörung'
 kopf    = ['Anh[öo]e?rung\s+(?:zur|zum|gem[äa]e?[ßBs8]|nach)', '^\s*Anh[öo]e?rung\b']
 hinweis = ['Gelegenheit\s+zur\s+(?:Stellungnahme|[ÄA]e?u[ßs]erung)']
+
+[[kategorien]]
+name    = 'Anforderungsschreiben'
+# Agentur fordert Unterlagen/Nachweise an (ohne förmliche Mitwirkungsaufforderung nach § 66 SGB I)
+kopf    = ['Anforderungsschreiben', 'Anforderung\s+(?:von|der|fehlender|weiterer)\s+(?:Unterlagen|Nachweise)',
+           'Bitte\s+um\s+(?:Ü|Ue|U)bersendung', 'Nachforderung\s+von\s+Unterlagen']
+hinweis = ['ben[öo]e?tige\s+ich\s+(?:noch\s+)?(?:folgende|die\s+folgenden|weitere)',
+           'senden\s+Sie\s+(?:mir|uns)\s+.{0,80}\s+zu', 'folgende\s+(?:Unterlagen|Nachweise)\s+(?:fehlen|ein)']
 
 [[kategorien]]
 name    = 'Mitwirkung'
@@ -361,4 +369,7 @@ status      = 'noch zu prüfen'
 aktion = 'manuell'
 
 [ninox.zuordnung.Mitwirkung]
+aktion = 'manuell'
+
+[ninox.zuordnung.Anforderungsschreiben]
 aktion = 'manuell'
