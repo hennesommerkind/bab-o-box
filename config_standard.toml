@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 5
+version = 7
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -36,6 +36,8 @@ erforderliches_stichwort = 'Berufsausbildungsbeihilfe|BAB'
 # Änderungsbescheid ohne erkannten Grund, dessen Abschnitt genau am Stichtag eines neuen Kostensatzes beginnt
 # (s. ninox.kostensaetze) → nach "Prüfen", weil es vermutlich ein Änderungsbescheid TS ist. [] = abschalten
 verdacht_ts_bei = ['Änderung']
+# Häuser, die NICHT als Wohnort erkannt werden dürfen (z. B. Empfänger als Bevollmächtigte, Schulungshaus)
+haeuser_ausschliessen = ['BAB Akademie', 'Palma de Mallorca']
 # Wörter, die nie Teil eines Namens sind (Anschreiben an das Haus, Agentur …)
 # Hier auch Nachnamen von Kolleg*innen eintragen, an die Abtretungs-Bescheide gerichtet sind (z. B. 'Guse') –
 # dann werden sie nie als Name der/des Auszubildenden genommen.
@@ -60,7 +62,7 @@ schema = '{kundennummer}_BAB-{kategorie}_{name}.pdf'
 # Kundennummer: beschriftet (zählt 3-fach) …
 kundennummer_beschriftet = [
   '(?:Kunden-?\s*nummer|Kd\.?-?\s*Nr\.?)\s*:?\s*(\d{3}\s?[A-Z]\s?\d{6})',
-  'Mein\s+Zeichen\s*:?\s*\d{3}-(\d{3}[A-Z]\d{6})',
+  'Mein\s+Zeichen\s*:?\s*\d{3}\s*[-/]\s*(\d{3}[A-Z]\d{6})',
 ]
 # … und frei im Text, z. B. Barcode-Zeile *022P425485* (zählt 1-fach)
 kundennummer_frei = [
@@ -98,14 +100,18 @@ antragsdatum = [
 auszahlung_nach_nachweis = [
   'f[üu]e?r\s+die\s+Zeit\s+ab\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+erst\s+ausgezahlt',
 ]
+# Numerisch ("19.12.2000") oder ausgeschrieben ("30. April 2004"). Steht das Datum nicht direkt hinter
+# "Geburtsdatum:" (Spaltensatz im Abdruck), greift ersatzweise: erstes vollständiges Datum mit einem
+# Jahr, das mindestens 13 Jahre zurückliegt (Bescheid-, Antrags- und Bewilligungsdaten sind immer jünger).
 geburtsdatum = [
-  'geb\.?\s*am\s*(\d{1,2}\.\d{1,2}\.\d{4})',
-  'Geburtsdatum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+  'geb\.?\s*am\s*(\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4})',
+  'Geburtsdatum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4})',
   'Leistungsangelegenheit\s.{0,60}?\bam\s+(\d{1,2}\.\d{1,2}\.\d{4})',
 ]
 # Tabellenzeile unter "von bis mtl. Betrag": Datum Datum [OCR-Rest] Betrag €
+# Störzeichen sind eingeplant: "' 01.09.2026° 29.02.2028", "17.06.2026 (Prüfungstag) 1.873,00 €", "| mtl."
 tabellenzeile = [
-  '^\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+[^\d\n]{0,6}(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:€|EUR)',
+  '^[^\d\n]{0,4}(\d{2}\.\d{2}\.\d{4})[^\d\s]{0,2}\s+(\d{2}\.\d{2}\.\d{4})[^\d\s]{0,2}\s+[^\d\n]{0,25}?(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:€|EUR)',
 ]
 # Nur falls keine Tabelle gefunden wurde:
 zeitraum = [
@@ -177,6 +183,29 @@ muster = [
   '(?:neue|ge[äa]e?nderte)\s+(?:Entgelt|Leistungs)vereinbarung',
 ]
 
+# --------------------------------------------------------------------------- Status-Regeln
+# Überschreiben den Status aus ninox.zuordnung, wenn eines der Muster im Bescheid steht.
+[[status_regeln]]
+name   = 'vorläufig'
+status = 'bewilligt (noch nicht final)'
+muster = ['Vorl[äa]e?ufige\s+Entscheidung', 'vorl[äa]e?ufig\s+entschieden', '§\s*328\s+SGB|\$\s*328\s+SGB|8\s*328\s+SGB']
+# Frist für nachzureichende Unterlagen -> Notiz am Bescheid ("bis zum 24.08.2026 vor")
+notiz_frist = 'Unterlagen.{0,300}?bis\s+zum\s+(\d{1,2}\.\d{1,2}\.\d{4})'
+
+# --------------------------------------------------------------------------- Kostensatz aus dem Bedarf
+# Im Wohnheim gilt: Bedarf für den Lebensunterhalt = monatlicher Kostensatz + Pauschale für sonstige Bedürfnisse.
+# Also: Kostensatz = Bedarf − Pauschale → Abgleich mit den Kostensätzen aus den Ninox-Stammdaten.
+# Damit wird je Abschnitt der richtige Kostensatz gesetzt, ein veralteter Satz der Agentur gemeldet,
+# das Haus erkannt (auch ohne Anschrift) und eine Tagessatz-Änderung belegt.
+[kostensatz_abgleich]
+toleranz       = 0.05     # Euro Abweichung, die noch als Treffer gilt (Rundung)
+tage_pro_monat = 30.4     # für Kostensätze, die als Tagessatz hinterlegt sind (BA rechnet Tagessatz × 30,4)
+
+# Pauschale für sonstige Bedürfnisse – bei Rechtsänderung neuen Eintrag mit "ab" ergänzen
+[[kostensatz_abgleich.pauschalen]]
+ab     = '2000-01-01'
+betrag = 115.00
+
 # --------------------------------------------------------------------------- Antragsart (nur Kontrolle)
 # Die Antragsart (Erstbewilligung, Weiterbewilligung …) steht am Antrag in Ninox – der Bescheid erbt sie,
 # weil er am passenden Antrag (über das Antragsdatum) abgelegt wird. Diese Muster dienen nur der Gegenprobe:
@@ -189,7 +218,7 @@ muster = ['Wiederholungspr[üu]e?fung', 'nicht\s+bestandene[nr]?\s+(?:Abschluss|
 
 [[antragsart_hinweise]]
 name   = 'reguläre Ausb-Verlängerung'
-muster = ['Verl[äa]e?ngerung\s+(?:der|Ihrer)\s+(?:Berufs)?[Aa]usbildung(?:szeit|sdauer)?']
+muster = ['Verl[äa]e?ngerung\s+(?:der|Ihrer|des)\s+(?:Berufs)?[Aa]usbildung(?:szeit|sdauer|svertrag\w*)?']
 
 # --------------------------------------------------------------------------- Ninox
 # Aufbau wie in eurer Ninox-Datenbank:
@@ -243,18 +272,30 @@ kostensatz = 'Kostensatz'
 haeuser_tabelle      = 'Häuser'
 kostensaetze_tabelle = 'Kostensätze'
 
+# Feldnamen wie im Ninox-Export (Haus1.csv / Kostensatz1.csv)
 [ninox.stammdaten.haeuser_felder]
-name      = 'Name'
-kuerzel   = 'Kürzel'
-strasse   = 'Straße'
-plz       = 'PLZ'
-ort       = 'Ort'
+name      = 'Rechtsträger_Name'
+kuerzel   = 'Kurzbezeichnung'
+strasse   = 'Einrichtung_Str'
+plz       = 'Einrichtung_PLZ'
+ort       = 'Einrichtung_Stadt'
 anschrift = ''                               # falls die Anschrift in EINEM Feld steht: dessen Name
 
 [ninox.stammdaten.kostensaetze_felder]
-bezeichnung = 'Bezeichnung'                  # Anzeige, z. B. "B-PB 01/25 (ab 01.01.2025)"
-ab          = 'Gültig ab'
-haus        = 'Haus'                         # Verknüpfung zum Haus
+bezeichnung = 'Bezeichnung'                  # z. B. "B-PB 01/26" – Gültigkeit wird aus "01/26" gelesen
+ab          = ''                             # eigenes Datumsfeld "gültig ab"? Sonst leer lassen
+haus        = 'Kurzbezeichnung'              # Verknüpfung zum Haus (Name oder ID)
+verpflegung = 'Verpflegung Tag'              # Verpflegung je Tag (VP = × 30,4)
+
+# Beträge je Zimmerart für den Abgleich mit dem Bescheid (Name links frei wählbar, rechts Feldname in Ninox).
+# Monatsbeträge ODER Tagessätze (werden × 30,4 gerechnet). Leer = kein Abgleich, nur Anzeige des Werts.
+[ninox.stammdaten.kostensaetze_felder.betraege]
+# EZ = 'Monatsbetrag EZ'
+# DZ = 'Monatsbetrag DZ'
+
+[ninox.stammdaten.kostensaetze_felder.tagessaetze]
+# EZ = 'Tagessatz EZ'
+# DZ = 'Tagessatz DZ'
 
 # Nur ohne Stammdaten: Kostensätze aus dieser Liste ("name" = Auswahlwert in Ninox)
 [[ninox.kostensaetze]]

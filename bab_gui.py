@@ -346,6 +346,8 @@ class App(tk.Tk):
         ]
         if z.get("zeitraeume"):
             teile.append(("Bewilligungsabschnitte", z["zeitraeume"].replace(" | ", "\n"), ""))
+        if z.get("kostensatz"):
+            teile.append(("Kostensatz (aus Bedarf für den Lebensunterhalt)", z["kostensatz"].replace(" | ", "\n"), ""))
         if z.get("notiz"):
             teile.append(("Notiz zum Bescheid", z["notiz"], ""))
         if z.get("antragsart_hinweis"):
@@ -669,6 +671,8 @@ class App(tk.Tk):
             return
         text, e, mit_ki = ergebnis
         aus = ["ERKANNT (Regeln)", "-" * 40]
+        if e.kostensatz_info:
+            aus += ["Kostensatz aus Bedarf:"] + [f"   {z}" for z in e.kostensatz_info.split(" | ")] + [""]
         aus += [f"{k:15} {v or '–'}" for k, v in asdict(e).items()]
         fehlend = e.fehlend(self.k.cfg["regeln"]["pflichtfelder"])
         aus.append(f"\nPflichtfelder fehlen: {', '.join(fehlend)}" if fehlend else "\nAlle Pflichtfelder erkannt ✔")
@@ -741,6 +745,7 @@ class App(tk.Tk):
         knoepfe.grid(row=4, column=1, sticky="w", pady=(6, 0))
         ttk.Button(knoepfe, text="Verbindung testen", command=self._ninox_testen).pack(side="left")
         ttk.Button(knoepfe, text="Stammdaten laden (Häuser, Kostensätze)", command=self._stammdaten_laden).pack(side="left", padx=6)
+        ttk.Button(knoepfe, text="… aus CSV-Export", command=self._stammdaten_csv).pack(side="left", padx=6)
         self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel")
         self.lbl_stamm.grid(row=5, column=1, sticky="w")
 
@@ -845,6 +850,29 @@ class App(tk.Tk):
             messagebox.showinfo("Stammdaten", text)
 
         self._hintergrund(laden, fertig, "Lade Stammdaten …")
+
+    def _stammdaten_csv(self):
+        """Ohne API: Ninox-Export der Häuser- und der Kostensatz-Tabelle (CSV, Semikolon) einlesen."""
+        haus = filedialog.askopenfilename(title="1/2: Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
+        if not haus:
+            return
+        ks = filedialog.askopenfilename(title="2/2: Kostensätze-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
+        if not ks:
+            return
+        try:
+            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks), self._formular_cfg(), self.k.ordner)
+        except Exception as fehler:  # noqa: BLE001
+            messagebox.showerror("Stammdaten", f"CSV konnte nicht gelesen werden:\n{fehler}")
+            return
+        self.k.laden()
+        self._konfiguration_anwenden()
+        self.lbl_stamm.configure(text=self._stammdaten_text())
+        ohne_betrag = sum(1 for k in daten["kostensaetze"] if not k.get("betraege"))
+        text = self._stammdaten_text()
+        if ohne_betrag:
+            text += (f"\n\n{ohne_betrag} Kostensätze ohne Monatsbetrag/Tagessatz – Häuser werden erkannt, "
+                     "der Abgleich mit dem Bedarf für den Lebensunterhalt geht aber erst mit Beträgen.")
+        messagebox.showinfo("Stammdaten", text)
 
     def _ninox_testen(self):
         cfg = self._formular_cfg()

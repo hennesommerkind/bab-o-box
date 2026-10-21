@@ -41,7 +41,16 @@ KEIN_NAME = {w.lower() for w in (
     "E-Mail Mail Telefon Tel Datum Zeichen Ihr Ihre Ihren Ihrem Name Vorname Anschrift Geburtsdatum Guten Tag Sehr "
     "geehrte geehrter Mit freundlichen Grüßen Grüssen Auftrag im und oder Kundennummer Kundenname Herr Herrn Frau "
     "von der die das den dem bei für vom zum zur Sie Ihnen Bescheid Antrag Leistung Kenntnisnahme Rückfragen "
-    "Abdruck Anlage Seite Berechnungsbogen Einkommensfeststellung").split()}
+    "Abdruck Anlage Seite Berechnungsbogen Einkommensfeststellung Eltern Elternteil Ehegatte Ehegatten "
+    "Lebenspartner Lebenspartners Kinder Kind Kunde Kunden Azubi Auszubildende Auszubildenden Team Reha BAB "
+    "Antwort jeder bitte angeben Absender Absenderin Vor Zuname Straße Hausnummer Postfach Postleitzahl Wohnort "
+    "Jugendberufsagentur Abt Bevollmächtigte Vertreter Vertreterin Mitte Nord Süd Ost West Main Dienststelle "
+    "Servicerufnummer Online Internet Unterschrift Datum Ort Konto Zahlung Zahlungen Leistung Leistungen Für Die "
+    "Der Das An Im In Mit Bei Auf Nach Von Zur Zum Sie Ihnen Ihr Ihre Wir Es Ist Wird Werden Gemäß Hinweis").split()}
+# Namensbestandteile, die klein geschrieben sein dürfen
+PARTIKEL = {"von", "van", "vom", "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "al", "el", "bin",
+            "ibn", "ter", "ten", "zu", "zur", "dos", "das", "y"}
+
 # übliche Wörter in beschrifteten Zeilen, die selbst keine persönlichen Daten sind
 BESCHRIFTUNGEN = {w.lower() for w in (
     "Anschrift Ausbildungsbetrieb Arbeitgeber Betrieb Berufsschule Schule Elternteil Eltern Mutter Vater "
@@ -92,8 +101,21 @@ def _feste_muster(text: str, z: Zuordnung, datei: str) -> str:
     # Kundennummern (auch mit Leerzeichen, im Barcode *…* und in "Mein Zeichen: 021-…")
     def kdnr(m):
         roh = re.sub(r"\s", "", m.group(0)).upper()
-        return z.ersatz(roh, "Kundennummer", datei, lambda n: f"900X{n:06d}")
+        if roh.startswith("900X"):
+            return m.group(0)
+        kern_ = roh[:3] + roh[4:] if len(roh) == 10 else roh
+        return z.ersatz(kern_, "Kundennummer", datei, lambda n: f"900X{n:06d}")
     text = re.sub(r"(?<![A-Z0-9])\d{3}\s?[A-Z]\s?\d{6}(?![A-Z0-9])", kdnr, text)
+    # Lesefehler: Buchstabe als 0 gelesen (10 Ziffern) – und überhaupt jede alleinstehende 10-stellige Zahl
+    text = re.sub(r"(?<![\w.,/-])\d{10}(?![\w.,/])", kdnr, text)
+    # beschriftete Nummern mit OCR-Müll ("Kundennummer: A357D13792", "Mein Zeichen: 022-A357D13792")
+    def kdnr_beschriftet(m):
+        wert = m.group(2)
+        if wert.startswith("900X") or not (sum(c.isdigit() for c in wert) >= 7):
+            return m.group(0)
+        return m.group(1) + z.ersatz(wert, "Kundennummer", datei, lambda n: f"900X{n:06d}")
+    text = re.sub(r"((?:Kundennummer|Kd\.?-?Nr\.?)\s*:?\s*|Mein\s+Zeichen\s*:?\s*\d{3}\s*[-/]\s*)([A-Z0-9]{8,11})\b",
+                  kdnr_beschriftet, text)
 
     # IBAN (außer dem öffentlichen Konto der Bundesagentur)
     def iban(m):
@@ -103,13 +125,17 @@ def _feste_muster(text: str, z: Zuordnung, datei: str) -> str:
         return z.ersatz(roh, "IBAN", datei, lambda n: f"DE00 0000 0000 0000 {n:04d} 00")
     text = re.sub(r"\bDE[0-9O]{2}(?:\s?[0-9O]{4}){4}\s?[0-9O]{2}\b", iban, text)
 
-    # Geburtsdaten: Tag und Monat ersetzen, Jahr bleibt (für Altersfragen relevant, allein nicht identifizierend)
+    # Geburtsdaten: Tag und Monat ersetzen, Jahr bleibt (für Altersfragen relevant, allein nicht identifizierend).
+    # Erfasst wird JEDES vollständige Datum, das mind. 13 Jahre zurückliegt – Bescheid-, Antrags- und
+    # Bewilligungsdaten sind immer jünger. So auch "30. April 2004", "I14.09.2001" oder Daten ohne Beschriftung.
+    grenze = datetime.now().year - 13
     def geb(m):
-        d = m.group(2)
-        jahr = d[-4:]
-        return m.group(1) + z.ersatz(d, "Geburtsdatum", datei, lambda n: f"01.01.{jahr}")
-    text = re.sub(r"((?:geb\.?\s*am|Geburtsdatum\s*:?|geboren\s+am)\s*)(\d{1,2}\.\d{1,2}\.\d{4})", geb, text,
-                  flags=re.IGNORECASE)
+        d = kern.datum_iso(re.sub(r"\s+", " ", m.group(0)))
+        if not d or not (1940 <= int(d[:4]) <= grenze) or d[5:] == "01-01":
+            return m.group(0)
+        lang = not re.match(r"\d{1,2}\.\d{1,2}\.", m.group(0))
+        return z.ersatz(d, "Geburtsdatum", datei, lambda n: (f"1. Januar {d[:4]}" if lang else f"01.01.{d[:4]}"))
+    text = re.sub(rf"(?<!\d)(?:\d{{1,2}}\.\d{{1,2}}\.\d{{4}}|{kern.DATUM_LANG_RE})(?!\d)", geb, text)
 
     # E-Mail-Adressen (außer @arbeitsagentur.de – Funktionspostfächer)
     def mail(m):
@@ -211,33 +237,75 @@ def _hausanschriften(text: str, cfg: dict) -> set[str]:
         s = kern._strassen_stamm(h.get("strasse") or h.get("anschrift") or "")
         if s:
             staemme.add(s)
-    for m in re.finditer(r"Kolping", text, re.IGNORECASE):  # Straße, die direkt nach "Kolping …" steht
-        umgebung = text[m.end(): m.end() + 160]
-        s = re.search(r"((?:[^\W\d_][\w\-]*\s+)?[^\W\d_]*(?:stra(?:ß|ss)e|str\.|weg|allee|platz|gasse|ring|damm))"
-                      r"\s*\d", umgebung, re.IGNORECASE)
-        if s:
-            stamm = kern._strassen_stamm(s.group(1))
-            if stamm:
-                staemme.add(stamm)
+    zeilen = text.splitlines()
+    for i, zeile in enumerate(zeilen):  # Straße/PLZ in den Zeilen direkt unter "Kolping …"
+        if not re.search(r"Kolping", zeile, re.IGNORECASE) or re.search(r"Konto|Zahlung|Abtretung", zeile):
+            continue
+        for folge in zeilen[i + 1: i + 6]:
+            st = re.match(r"\s*([^\W\d_][\w.\- ]{2,40}?)\s+\d{1,3}\s*[a-z]?(?:\s*-\s*\d+)?\b", folge)
+            if st and not re.search(r"Agentur|Service|Tel|Fax|\d{5}", st.group(1)):
+                stamm = kern._strassen_stamm(st.group(1))
+                if stamm:
+                    staemme.add(stamm)
+            plz = re.match(r"\s*(\d{5})\s+[^\W\d_]", folge)
+            if plz:
+                staemme.add("plz:" + plz.group(1))
+                break
+    for h in (cfg.get("_stammdaten") or {}).get("haeuser", []):
+        p = re.search(r"\b\d{5}\b", " ".join(str(h.get(k) or "") for k in ("plz", "anschrift")))
+        if p:
+            staemme.add("plz:" + p.group(0))
     return staemme
 
 
 def _ist_hausanschrift(fund: str, staemme: set[str]) -> bool:
     norm = kern._adresse_norm(fund)
-    return any(re.search(rf"\b{re.escape(s)}", norm) for s in staemme)
+    strassen = [s for s in staemme if not s.startswith("plz:")]
+    if any(re.search(rf"\b{re.escape(s)}", norm) for s in strassen):
+        return True
+    plz = re.search(r"\b\d{5}\b", fund)  # nur "PLZ Ort" ohne Straße: Haus-PLZ bleibt
+    return bool(plz and "plz:" + plz.group(0) in staemme and not re.search(r"[^\W\d_]{3,}\.?\s*\d", fund.split(plz.group(0))[0]))
+
+
+def _name_kandidat(roh: str) -> str | None:
+    """Nur echte Namensfolgen durchlassen: alle Wörter groß (außer Partikeln), keine Allerweltswörter."""
+    woerter = re.findall(kern.WORT, kern.ANREDE.sub("", roh))
+    if not woerter or len(woerter) > 5:
+        return None
+    for w in woerter:
+        if w.lower() in PARTIKEL:
+            continue
+        if not w[0].isupper() or w.lower() in KEIN_NAME or OFFIZIELL.search(w):
+            return None
+    return " ".join(woerter)
 
 
 def _ersetze_ueberall(text: str, original: str, ersatz: str) -> str:
     return re.sub(rf"(?<![\w]){re.escape(original)}(?![\w])", ersatz, text)
 
 
+def _ist_pseudonym(w: str) -> bool:
+    """Schon ersetzte Baum-Namen (auch zusammengesetzte wie 'Birkeulme') nicht erneut ersetzen."""
+    rest = w.lower()
+    baeume = sorted((b.lower() for b in POOL), key=len, reverse=True)
+    while rest:
+        b = next((b for b in baeume if rest.startswith(b)), None)
+        if not b:
+            return False
+        rest = rest[len(b):]
+    return True
+
+
 def _personen_ersetzen(text: str, funde: list[str], z: Zuordnung, datei: str) -> str:
     """Namen Wort für Wort ersetzen – so wird 'Şükrü Yılmaz', 'Yılmaz, Şükrü' und 'Herr Yılmaz' einheitlich."""
     woerter = set()
     for f in funde:
+        if not f:
+            continue
         f = kern.ANREDE.sub("", f)
         for w in re.findall(kern.WORT, f):
-            if len(w) >= 3 and not OFFIZIELL.search(w) and w.lower() not in KEIN_NAME:
+            if len(w) >= 3 and not OFFIZIELL.search(w) and w.lower() not in KEIN_NAME and not (w.isupper() and len(w) <= 4) \
+                    and not _ist_pseudonym(w):
                 woerter.add(w)
     for w in sorted(woerter, key=len, reverse=True):
         ersatz = z.ersatz(w, "Name", datei, _pool_name)
@@ -262,10 +330,25 @@ def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: boo
         if woerter and not OFFIZIELL.search(m.group(2)):
             personen.append(" ".join(woerter))
 
+    # "Lea Guse Kolping Jugendwohnen" / "Guten Tag Lea Guse Kolping …" -> Name vor "Kolping"
+    for m in re.finditer(rf"(?m)(?:^|Guten\s+Tag\s+)[ \t]*((?:{kern.WORT}[ \t]+){{1,3}})Kolping", text):
+        personen.append(_name_kandidat(m.group(1)) or '')
+    # "für Zirbe, Zeka (Elternteil 1)" -> beide Teile
+    for m in re.finditer(rf"(?:f[üu]e?r|und|,)\s+({kern.WORT}(?:[ ,]+{kern.WORT}){{0,3}})\s*[({{]\s*(?:Elternteil|Eltern)", text):
+        personen.append(_name_kandidat(m.group(1)) or '')
+    # Anschriftenfeld: "Espe En-Nhallı (Bei jeder Antwort bitte angeben)" -> Wörter davor
+    for m in re.finditer(rf"(?m)^[ \t]*((?:{kern.WORT}[ \t]+){{1,4}})[({{]\s*Bei\s+jeder\s+Antwort", text):
+        personen.append(_name_kandidat(m.group(1)) or '')
+    # "Absender: … (Vor- und Zuname)": Zeile davor
+    for m in re.finditer(rf"(?m)^[ \t]*((?:{kern.WORT}[ \t]*){{1,4}})(?:[^\n]*)\n\s*\(Vor-\s*und\s*Zuname\)", text):
+        personen.append(_name_kandidat(m.group(1)) or '')
+
     if mit_ki:
         for t, art in ki_fundstellen(text, cfg, melden):
             if art == "PERSON":
-                if not OFFIZIELL.search(t):
+                woerter = re.findall(kern.WORT, kern.ANREDE.sub("", t))
+                klein = [w for w in woerter if w[0].islower() and w.lower() not in PARTIKEL]
+                if not OFFIZIELL.search(t) and woerter and not klein:
                     personen.append(t)
             elif art == "ANSCHRIFT":
                 if not _ist_hausanschrift(t, staemme) and not OFFIZIELL.search(t):
@@ -292,6 +375,12 @@ def restpruefung(text: str, cfg: dict, z: Zuordnung, staemme: set[str] | None = 
             w.append("Kundennummer-ähnliche Zahl übrig")
     if re.search(r"(?:geb\.?\s*am|Geburtsdatum)\s*:?\s*(?!01\.01\.)\d{1,2}\.\d{1,2}\.\d{4}", text, re.IGNORECASE):
         w.append("Geburtsdatum nicht ersetzt")
+    for m in re.finditer(rf"(?<!\d)(?:\d{{1,2}}\.\d{{1,2}}\.\d{{4}}|{kern.DATUM_LANG_RE})(?!\d)", text):
+        d = kern.datum_iso(re.sub(r"\s+", " ", m.group(0)))
+        if d and int(d[:4]) <= datetime.now().year - 13 and d[5:] != "01-01":
+            w.append(f"altes Datum (Geburtsdatum?) übrig: {m.group(0)}")
+    if re.search(r"(?<![\w.,/-])\d{10}(?![\w.,/])", text):
+        w.append("10-stellige Zahl übrig (Kundennummer mit Lesefehler?)")
     for m in re.finditer(rf"(?:Herrn?|Frau|Guten\s+Tag|Name\s*:)\s+({kern.WORT})", text):
         wort = m.group(1)
         if wort[0].isupper() and wort not in ersatzwoerter and not any(wort in e for e in ersatzwoerter) \

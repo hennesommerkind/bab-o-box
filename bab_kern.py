@@ -298,6 +298,10 @@ class Ergebnis:
     haus_id: int | None = None
     notiz: str = ""  # für das Notiz-Feld des Bescheids, z. B. Auszahlung erst nach Prüfungsnachweis
     antragsart_hinweis: str = ""  # Text deutet auf eine bestimmte Antragsart hin (nur zur Kontrolle)
+    status: str | None = None  # überschreibt den Status aus der Zuordnung (z. B. vorläufige Bewilligung)
+    lebensunterhalt: list = field(default_factory=list)  # [[von, bis, "2.565,54"], ...] aus dem Berechnungsbogen
+    kostensatz_info: str = ""  # Ergebnis des Kostensatz-Abgleichs (Anzeige)
+    ks_treffer: dict = field(default_factory=dict)  # {abschnitt_von: {id, text, variante, haus_id, ab}}
     abschnitte: list = field(default_factory=list)  # [[von_iso, bis_iso, "1.234,56"], ...]
     zeitraeume: str = ""  # alle Tabellenzeilen, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
     hinweise: str = ""  # Auffälligkeiten bei der Erkennung
@@ -630,10 +634,34 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     # Name (nur Dateiname/Anzeige)
     e.name = name_lesen(text, cfg)
 
-    # Geburtsdatum
+    # Geburtsdatum (beschriftet; sonst erstes Datum, das mind. 13 Jahre zurückliegt)
     m = erstes(m_cfg.get("geburtsdatum", []), text)
     if m:
         e.geburtsdatum = datum_iso(m.group(1))
+    if not e.geburtsdatum:
+        grenze = datetime.now().year - 13
+        for m in re.finditer(rf"\b(\d{{1,2}}\.\d{{1,2}}\.\d{{4}}|{DATUM_LANG_RE})", text):
+            d = datum_iso(m.group(1))
+            if d and 1950 <= int(d[:4]) <= grenze:
+                e.geburtsdatum = d
+                break
+
+    # Mehrere Personen in einem Scan? (verschiedene Kundennummern – Lesefehler 'D'→'0' eingerechnet)
+    kerne = {}
+    for m in re.finditer(r"(?<![A-Z0-9])(\d{3})\s?([A-Z]|0)\s?(\d{6})(?![A-Z0-9])", text):
+        kerne.setdefault(m.group(1) + m.group(3), set()).add(m.group(0))
+    if len(kerne) > 1:
+        hinweise.append("Kundennummer nicht eindeutig – evtl. mehrere Personen im Scan: " +
+                        ", ".join(sorted(min(v) for v in kerne.values())))
+
+    # Status-Regeln (z. B. vorläufige Entscheidung nach § 328 SGB III)
+    for regel in cfg.get("status_regeln", []):
+        if erstes(regel["muster"], text):
+            e.status = regel["status"]
+            frist = re.search(regel.get("notiz_frist", "$^"), text, re.IGNORECASE | re.DOTALL)
+            zusatz = f"{regel['name'].capitalize()} bewilligt" + (f" – Unterlagen bis {frist.group(1)} nachreichen" if frist else "")
+            e.notiz = "; ".join(x for x in (e.notiz, zusatz) if x)
+            break
 
     m = erstes(m_cfg.get("antragsdatum", []), text)
     if m:
@@ -648,7 +676,10 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
 
     stammdaten = cfg.get("_stammdaten") or {}
     if stammdaten.get("haeuser"):
-        haus, hinweis = haus_erkennen(text, stammdaten["haeuser"])
+        aus = [x.lower() for x in cfg["regeln"].get("haeuser_ausschliessen", [])]
+        kandidaten_h = [h for h in stammdaten["haeuser"]
+                        if not any(a in str(h.get(k) or "").lower() for a in aus for k in ("name", "kuerzel"))]
+        haus, hinweis = haus_erkennen(text, kandidaten_h)
         if haus:
             e.haus, e.haus_id = haus.get("kuerzel") or haus.get("name"), haus["id"]
         if hinweis:
@@ -672,8 +703,20 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     unterart, hinweis = unterart_bestimmen(text, cfg, e.kategorie)
     if unterart:
         e.kategorie = unterart
+
+    # Kostensatz aus "Bedarf für den Lebensunterhalt" (= Kostensatz + Pauschale für sonstige Bedürfnisse)
+    e.lebensunterhalt = lebensunterhalt_lesen(text)
+    ts_beleg = kostensatz_abgleich(e, cfg, hinweise)
+    ts_name = next((u["name"] for u in cfg.get("unterarten", []) if u.get("basis") == e.kategorie
+                    and re.search(r"\bTS\b", u["name"])), None)
+    if ts_beleg and ts_name and not unterart and not hinweis:
+        e.kategorie = ts_name
+        hinweise.append(f"Art aus Kostensatz abgeleitet: {ts_beleg}")
+
     if hinweis:
         hinweise.append(hinweis)
+    elif ts_beleg or e.ks_treffer:
+        pass  # Kostensatz belegt -> kein bloßer Verdacht nötig
     elif e.kategorie in cfg["regeln"].get("verdacht_ts_bei", []):
         stichtage = {k["ab"]: k["text"] for k in kostensaetze_fuer(cfg, e.haus_id)}
         for von, _, _ in (e.abschnitte or [[e.zeitraum_von, None, None]]):
@@ -682,6 +725,11 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
                                 f"– evtl. Änderungsbescheid TS? Bitte Art prüfen")
                 break
 
+    for von, _, _ in (e.abschnitte if e.haus_id is not None else []):
+        k = kostensatz_kandidaten(cfg, von, e.haus_id, e.geburtsdatum)
+        if len(k) > 1 and von not in e.ks_treffer:
+            hinweise.append(f"Kostensatz ab {iso_zu_de(von)} nicht eindeutig ({', '.join(x['text'] for x in k)}) – "
+                            "bitte in Ninox wählen")
     if (cfg.get("_stammdaten") or {}).get("kostensaetze") and not kostensaetze_fuer(cfg, e.haus_id) and e.abschnitte:
         hinweise.append("Haus nicht erkannt – Kostensatz wird nicht gesetzt")
 
@@ -705,26 +753,156 @@ def _strassen_stamm(strasse: str) -> str | None:
     return max(woerter, key=len) if woerter else None
 
 
+def _strassen_phrase(strasse: str) -> str | None:
+    """'Frankfurter Str. 3' -> 'frankfurter str' (ohne Hausnummer), 'Dellplatz' -> 'dellplatz'."""
+    n = _adresse_norm(strasse)
+    n = re.split(r"\s\d", " " + n)[0] if re.search(r"\d", n) else n
+    n = " ".join(n.split())
+    return n if len(n) >= 6 else None
+
+
 def haus_erkennen(text: str, haeuser: list[dict]) -> tuple[dict | None, str | None]:
-    """Haus über Straße + PLZ im Bescheid finden (Hausanschrift steht als Empfänger/Anschrift drin)."""
+    """Haus finden, in drei Stufen (die stärkste eindeutige gewinnt):
+    1. Straße + PLZ nah beieinander, 2. Name 'Kolping Jugendwohnen <Haus>', 3. Straße allein."""
     norm = _adresse_norm(text)
-    treffer = []
+    stufen: list[list[dict]] = [[], [], []]
     for h in haeuser:
         adresse = " ".join(str(h.get(k) or "") for k in ("strasse", "plz", "ort", "anschrift"))
         plz = re.search(r"\b\d{5}\b", adresse)
+        phrase = _strassen_phrase(h.get("strasse") or h.get("anschrift") or "")
         stamm = _strassen_stamm(h.get("strasse") or h.get("anschrift") or "")
-        if not (plz and stamm):
-            continue
-        for m in re.finditer(rf"\b{re.escape(stamm)}", norm):
-            umgebung = norm[max(0, m.start() - 60): m.end() + 160]
-            if re.search(rf"\b{plz.group(0)}\b", umgebung):
-                treffer.append(h)
-                break
-    if len(treffer) == 1:
-        return treffer[0], None
-    if len(treffer) > 1:
-        return None, "Haus nicht eindeutig: " + ", ".join(h.get("kuerzel") or h.get("name") for h in treffer)
+        if plz and stamm:
+            for m in re.finditer(rf"\b{re.escape(stamm)}", norm):
+                if re.search(rf"\b{plz.group(0)}\b", norm[max(0, m.start() - 60): m.end() + 160]):
+                    stufen[0].append(h)
+                    break
+        namen = {_adresse_norm(re.sub(r"\b(gGmbH|e\.\s?V\.?|GmbH)\b", "", str(h.get("name") or ""))).strip()}
+        if h.get("kuerzel"):
+            namen.add("jugendwohnen " + _adresse_norm(h["kuerzel"]).strip())
+        if any(len(n) > 14 and re.search(rf"\b{re.escape(n)}\b(?! (mitte|ehrenfeld|frohnhausen|st georg|eimsb))", norm)
+               for n in namen if n):
+            stufen[1].append(h)
+        if phrase and re.search(rf"\b{re.escape(phrase)}\b", norm):
+            stufen[2].append(h)
+    for treffer in stufen:
+        if len(treffer) == 1:
+            return treffer[0], None
+        if len(treffer) > 1:
+            return None, "Haus nicht eindeutig: " + ", ".join(h.get("kuerzel") or h.get("name") for h in treffer)
     return None, None
+
+
+BETRAG_IN_ZEILE = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*€")
+
+
+def _zahl(betrag: str) -> float:
+    return float(betrag.replace(".", "").replace(",", "."))
+
+
+def _euro(wert: float) -> str:
+    return f"{wert:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def lebensunterhalt_lesen(text: str) -> list[list]:
+    """[[von, bis, "2.796,28"], ...] – je Zeitraum des Berechnungsbogens der 'Bedarf für den Lebensunterhalt'.
+    Handschriftliche Notizen in derselben Zeile werden umgangen, indem der größte Betrag der Zeile zählt."""
+    erg = []
+    teile = re.split(r"(?=Zeitraum\s+von\s+\d{1,2}\.\d{1,2}\.\d{4})", text)
+    for teil in teile[1:]:
+        z = re.match(r"Zeitraum\s+von\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+bis\W*(\d{1,2}\.\d{1,2}\.\d{4})", teil)
+        lu = re.search(r"Bedarf\s+f\S{0,3}r\s+den\s+Lebensunterhalt([^\n]*)", teil)
+        if not (z and lu):
+            continue
+        betraege = [b for b in BETRAG_IN_ZEILE.findall(lu.group(1))] or re.findall(r"(\d{1,3}(?:\.\d{3})*,\d{2})", lu.group(1))
+        if betraege:
+            zeile = [datum_iso(z.group(1)), datum_iso(z.group(2)), max(betraege, key=_zahl)]
+            if zeile not in erg:
+                erg.append(zeile)
+    # Neues Formular (BAB 39 ab 07/2026): "01.04.2026 - 30.09.2027 … Lebensunterhalt … Ergebnis Lebensunterhalt 1.527,99 €"
+    for m in re.finditer(r"(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})\s*\n\s*\n?\s*Lebensunterhalt.{0,1500}?"
+                         r"Ergebnis\s+Lebensunterhalt\s+(\d{1,3}(?:\.\d{3})*,\d{2})", text, re.DOTALL):
+        zeile = [datum_iso(m.group(1)), datum_iso(m.group(2)), m.group(3)]
+        if zeile not in erg:
+            erg.append(zeile)
+    return erg
+
+
+def pauschale_sonstige(cfg: dict, datum: str | None) -> float:
+    beste = 0.0
+    for p in sorted(cfg.get("kostensatz_abgleich", {}).get("pauschalen", []), key=lambda p: p["ab"]):
+        if datum and p["ab"] <= datum:
+            beste = float(p["betrag"])
+    return beste
+
+
+def kostensatz_abgleich(e: "Ergebnis", cfg: dict, hinweise: list[str]) -> str | None:
+    """Monatlicher Kostensatz = Bedarf für den Lebensunterhalt − Pauschale für sonstige Bedürfnisse.
+    Abgleich mit den Kostensätzen der Stammdaten (Monatsbeträge bzw. Tagessatz × Tage).
+    Liefert einen Beleg-Text, falls der Bescheid eine Kostensatz-Änderung (TS) zeigt."""
+    k = cfg.get("kostensatz_abgleich", {})
+    toleranz = float(k.get("toleranz", 0.05))
+    alle_ks = [x for x in (cfg.get("_stammdaten") or {}).get("kostensaetze", []) if x.get("betraege")]
+    zeilen, beleg, haeuser = [], None, set()
+    vorher = None
+    for von, bis, lu in e.lebensunterhalt:
+        pausch = pauschale_sonstige(cfg, von)
+        wert = round(_zahl(lu) - pausch, 2)
+        text = f"{iso_zu_de(von)}–{iso_zu_de(bis)}: {lu} − {_euro(pausch)} = {_euro(wert)} €"
+        if wert <= 0 or not pausch:
+            zeilen.append(text + " (kein Wohnheim-Kostensatz)")
+            vorher = None
+            continue
+        kandidaten = []
+        for ks in alle_ks:
+            if e.haus_id is not None and ks.get("haus_id") not in (None, e.haus_id):
+                continue
+            for variante, betrag in ks["betraege"].items():
+                if betrag is not None and abs(betrag - wert) <= toleranz:
+                    kandidaten.append((ks, variante))
+        if not alle_ks:
+            zeilen.append(text)
+            continue
+        kleinster = min((b for x in alle_ks for b in x["betraege"].values() if b), default=0)
+        if not kandidaten and wert < 0.7 * kleinster:
+            zeilen.append(text + " (deutlich unter jedem Wohnheim-Kostensatz – vermutlich Grundbedarf, nicht im Haus)")
+            vorher = None
+            continue
+        if not kandidaten:
+            zeilen.append(text + " → kein passender Kostensatz in den Stammdaten")
+            hinweise.append(f"Kostensatz {_euro(wert)} € ({iso_zu_de(von)}) passt zu keinem Kostensatz in den Stammdaten")
+            vorher = None
+            continue
+        # gültig zum Abschnittsbeginn bevorzugen, sonst den jüngsten
+        gueltig = [c for c in kandidaten if (c[0].get("ab") or "") <= von] or kandidaten
+        ks, variante = max(gueltig, key=lambda c: c[0].get("ab") or "")
+        e.ks_treffer[von] = {"id": ks["id"], "text": ks["text"], "variante": variante, "haus_id": ks.get("haus_id"),
+                             "ab": ks.get("ab")}
+        haeuser.add(ks.get("haus_id"))
+        zeilen.append(text + f" → {ks['text']}" + (f" ({variante})" if variante else ""))
+        # veralteter Kostensatz? (es gibt für dieses Haus einen neueren, der zum Abschnittsbeginn schon galt)
+        neuere = [x for x in alle_ks if x.get("haus_id") == ks.get("haus_id") and (x.get("ab") or "") <= von
+                  and (x.get("ab") or "") > (ks.get("ab") or "")]
+        if neuere:
+            n = max(neuere, key=lambda x: x.get("ab") or "")
+            soll = n["betraege"].get(variante)
+            hinweise.append(f"Agentur hat ab {iso_zu_de(von)} den älteren Kostensatz {ks['text']} angesetzt – gültig wäre "
+                            f"{n['text']}" + (f" ({_euro(soll)} €)" if soll else "") + " – Änderung beantragen?")
+        # Kostensatz-Wechsel genau zum Abschnittsbeginn = Beleg für TS-Änderung
+        if vorher and vorher["id"] != ks["id"] and ks.get("ab") == von:
+            beleg = f"ab {iso_zu_de(von)} gilt {ks['text']} statt {vorher['text']}"
+        elif not vorher and ks.get("ab") == von and e.kategorie and "nderung" in e.kategorie:
+            beleg = f"Abschnitt beginnt mit neuem Kostensatz {ks['text']}"
+        vorher = e.ks_treffer[von]
+    if e.haus_id is None and len(haeuser) == 1 and None not in haeuser:
+        hid = next(iter(haeuser))
+        h = next((h for h in (cfg.get("_stammdaten") or {}).get("haeuser", []) if h["id"] == hid), None)
+        if h:
+            e.haus, e.haus_id = h.get("kuerzel") or h.get("name"), hid
+            zeilen.append(f"Haus aus Kostensatz abgeleitet: {e.haus}")
+    e.kostensatz_info = " | ".join(zeilen)
+    if e.ks_treffer:  # Kostensatz ist gesetzt -> Hinweis "Haus nicht erkannt – Kostensatz wird nicht gesetzt" entfällt
+        hinweise[:] = [h for h in hinweise if not h.startswith("Haus nicht erkannt – Kostensatz")]
+    return beleg
 
 
 def kostensaetze_fuer(cfg: dict, haus_id: int | None) -> list[dict]:
@@ -735,6 +913,88 @@ def kostensaetze_fuer(cfg: dict, haus_id: int | None) -> list[dict]:
             return [k for k in ks if k.get("haus_id") == haus_id]
         return ks if len({k.get("haus_id") for k in ks}) <= 1 else []
     return [{"id": None, "text": k["name"], "ab": k["ab"]} for k in cfg.get("ninox", {}).get("kostensaetze", [])]
+
+
+def ks_ab_aus_bezeichnung(text: str) -> str | None:
+    """'B-PB 01/26' -> '2026-01-01' (Gültigkeit steht bei euch im Namen)."""
+    m = re.search(r"(?<!\d)(0[1-9]|1[0-2])/(\d{2})(?!\d)", text or "")
+    return f"20{m.group(2)}-{m.group(1)}-01" if m else None
+
+
+def _zahl_oder_none(v) -> float | None:
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str) and re.fullmatch(r"\s*-?\d{1,3}(?:\.?\d{3})*(?:,\d+)?\s*(?:€)?\s*", v):
+        return _zahl(v.replace("€", "").strip()) if "," in v else float(v.replace(".", "").replace("€", "").strip())
+    return None
+
+
+def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dict) -> dict:
+    """Aus Datensätzen (API: {id, fields}) bzw. CSV-Zeilen die interne Form bauen."""
+    st = cfg["ninox"].get("stammdaten", {})
+    hf, kf = st.get("haeuser_felder", {}), st.get("kostensaetze_felder", {})
+    tage = float(cfg.get("kostensatz_abgleich", {}).get("tage_pro_monat", 30.4))
+    w = lambda f, k: f.get(k) if k else None  # noqa: E731
+    daten = {"geladen": datetime.now().strftime("%Y-%m-%d %H:%M"), "haeuser": [], "kostensaetze": []}
+    for i, r in enumerate(haeuser_roh, 1):
+        f = r.get("fields", r)
+        h = {"id": r.get("id", i), **{k: (str(w(f, hf.get(k))).strip() if w(f, hf.get(k)) not in (None, "") else None)
+                                       for k in ("name", "kuerzel", "strasse", "plz", "ort", "anschrift")}}
+        if h["name"] or h["kuerzel"]:
+            daten["haeuser"].append(h)
+    nach_name = {}
+    for h in daten["haeuser"]:
+        for k in ("kuerzel", "name"):
+            if h.get(k):
+                nach_name[h[k].lower()] = h["id"]
+    for i, r in enumerate(ks_roh, 1):
+        f = r.get("fields", r)
+        bez = str(w(f, kf.get("bezeichnung")) or "").strip()
+        if not bez:
+            continue
+        haus = w(f, kf.get("haus"))
+        if isinstance(haus, dict):
+            haus = haus.get("id")
+        if isinstance(haus, str) and not haus.strip().isdigit():
+            haus = nach_name.get(haus.strip().lower())
+        betraege = {}
+        for variante, feld in (kf.get("betraege") or {}).items():
+            v = _zahl_oder_none(w(f, feld))
+            if v is not None:
+                betraege[variante] = round(v, 2)
+        for variante, feld in (kf.get("tagessaetze") or {}).items():
+            v = _zahl_oder_none(w(f, feld))
+            if v is not None and variante not in betraege:
+                betraege[variante] = round(v * tage, 2)
+        ab = datum_iso(str(w(f, kf.get("ab")) or "")[:10]) if kf.get("ab") else None
+        daten["kostensaetze"].append({
+            "id": r.get("id", i), "text": bez, "ab": ab or ks_ab_aus_bezeichnung(bez),
+            "haus_id": int(haus) if haus not in (None, "") and str(haus).isdigit() else None,
+            "betraege": betraege, "verpflegung_tag": _zahl_oder_none(w(f, kf.get("verpflegung")))})
+    return daten
+
+
+def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path) -> dict:
+    """Ninox-Exporte (CSV, Semikolon) der Häuser- und Kostensatz-Tabelle einlesen – ohne API-Zugang."""
+    def lesen(p: Path) -> list[dict]:
+        roh = p.read_bytes()
+        for enc in ("utf-8-sig", "cp1252"):
+            try:
+                text = roh.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        trenner = ";" if text.split("\n", 1)[0].count(";") >= text.split("\n", 1)[0].count(",") else ","
+        return list(csv.DictReader(text.splitlines(keepends=True), delimiter=trenner))
+    haeuser = lesen(haus_csv)
+    for zeile in haeuser:  # Nr-Spalte als ID nutzen, wenn vorhanden
+        nr = zeile.get("Nr") or zeile.get("Id") or zeile.get("ID")
+        if nr and str(nr).strip().isdigit():
+            zeile["id"] = int(nr)
+    daten = stammdaten_aufbereiten(haeuser, lesen(ks_csv), cfg)
+    daten["quelle"] = "CSV"
+    (ordner / "stammdaten.json").write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
+    return daten
 
 
 def stammdaten_lesen(ordner: Path) -> dict:
@@ -827,15 +1087,29 @@ def ki_testen(cfg: dict) -> str:
 
 # =========================================================================== Ninox
 
-def kostensatz_waehlen(cfg: dict, beginn: str | None, haus_id: int | None = None) -> dict | None:
-    """Neuester Kostensatz des Hauses, der zum Beginn des Abschnitts schon gilt -> {"_ref": id, "_text": Anzeige}."""
+def kostensatz_kandidaten(cfg: dict, beginn: str | None, haus_id: int | None = None,
+                          geburtsdatum: str | None = None) -> list[dict]:
+    """Kostensätze des Hauses mit dem jüngsten 'ab' ≤ Abschnittsbeginn. Varianten VJ/MJ werden über das Alter
+    zum Abschnittsbeginn entschieden; bleiben mehrere (z. B. EZ/DZ), entscheidet der Mensch."""
     if not beginn:
-        return None
-    beste = None
-    for k in sorted(kostensaetze_fuer(cfg, haus_id), key=lambda k: k["ab"] or ""):
-        if k["ab"] and k["ab"] <= beginn:
-            beste = {"_ref": k["id"], "_text": k["text"]}
-    return beste
+        return []
+    gueltig = [k for k in kostensaetze_fuer(cfg, haus_id) if k.get("ab") and k["ab"] <= beginn]
+    if not gueltig:
+        return []
+    neuestes = max(k["ab"] for k in gueltig)
+    kandidaten = [k for k in gueltig if k["ab"] == neuestes]
+    if geburtsdatum and len(kandidaten) > 1:
+        volljaehrig = f"{int(geburtsdatum[:4]) + 18}{geburtsdatum[4:]}" <= beginn
+        passend = [k for k in kandidaten if re.search(r"\bVJ\b" if volljaehrig else r"\bMJ\b", k["text"])]
+        kandidaten = passend or kandidaten
+    return kandidaten
+
+
+def kostensatz_waehlen(cfg: dict, beginn: str | None, haus_id: int | None = None,
+                       geburtsdatum: str | None = None) -> dict | None:
+    """Eindeutiger Kostensatz zum Abschnittsbeginn -> {"_ref": id, "_text": Anzeige}; mehrdeutig -> None."""
+    k = kostensatz_kandidaten(cfg, beginn, haus_id, geburtsdatum)
+    return {"_ref": k[0]["id"], "_text": k[0]["text"]} if len(k) == 1 else None
 
 
 def anzeige(v) -> str:
@@ -851,7 +1125,7 @@ def ablage_plan(cfg: dict, e: "Ergebnis", dateiname: str, heute: str | None = No
     heute = heute or datetime.now().strftime("%Y-%m-%d")
 
     fb = n["bescheid"]["felder"]
-    bescheid = {fb.get("datum"): e.bescheiddatum, fb.get("status"): z.get("status"), fb.get("notiz"): e.notiz or None}
+    bescheid = {fb.get("datum"): e.bescheiddatum, fb.get("status"): e.status or z.get("status"), fb.get("notiz"): e.notiz or None}
 
     fa = n["abschnitte"]["felder"]
     zeilen = e.abschnitte or ([[e.zeitraum_von, e.zeitraum_bis, e.betrag]] if e.zeitraum_von and e.zeitraum_bis else [])
@@ -860,7 +1134,8 @@ def ablage_plan(cfg: dict, e: "Ergebnis", dateiname: str, heute: str | None = No
         for von, bis, betrag in zeilen:
             abschnitte.append({fa.get("beginn"): von, fa.get("ende"): bis,
                                fa.get("betrag"): betrag_zahl(betrag) if betrag else None,
-                               fa.get("kostensatz"): kostensatz_waehlen(cfg, von, e.haus_id)})
+                               fa.get("kostensatz"): ({"_ref": e.ks_treffer[von]["id"], "_text": e.ks_treffer[von]["text"]}
+                                                      if von in e.ks_treffer else kostensatz_waehlen(cfg, von, e.haus_id, e.geburtsdatum))})
 
     d = n["dokument"]
     fd = d["felder"]
@@ -899,6 +1174,7 @@ class Ninox:
         self.s = requests.Session()
         self.s.headers["Authorization"] = f'Bearer {n["api_schluessel"]}'
         self._tabellen: list[dict] | None = None
+        n["_tage_pro_monat"] = cfg.get("kostensatz_abgleich", {}).get("tage_pro_monat", 30.4)
 
     # ---------------------------------------------------------------- Schema
     def tabellen(self) -> list[dict]:
@@ -931,7 +1207,10 @@ class Ninox:
         if st.get("haeuser_tabelle"):
             pruefliste.append((st["haeuser_tabelle"], list(st.get("haeuser_felder", {}).values())))
         if st.get("kostensaetze_tabelle"):
-            pruefliste.append((st["kostensaetze_tabelle"], list(st.get("kostensaetze_felder", {}).values())))
+            kf = st.get("kostensaetze_felder", {})
+            felder = [v for v in kf.values() if isinstance(v, str)]
+            felder += list((kf.get("betraege") or {}).values()) + list((kf.get("tagessaetze") or {}).values())
+            pruefliste.append((st["kostensaetze_tabelle"], felder))
         for tab, felder in pruefliste:
             try:
                 t = self.tabelle(tab)
@@ -1054,36 +1333,13 @@ class Ninox:
     def stammdaten_laden(self, ordner: Path) -> dict:
         """Häuser (mit Anschrift) und Kostensätze aus Ninox holen und lokal speichern."""
         st = self.cfg.get("stammdaten", {})
-        daten = {"geladen": datetime.now().strftime("%Y-%m-%d %H:%M"), "haeuser": [], "kostensaetze": []}
-        wert = lambda f, k: f.get(k) if k else None  # noqa: E731
-        if st.get("haeuser_tabelle"):
-            hf = st.get("haeuser_felder", {})
-            for r in self._datensaetze(st["haeuser_tabelle"]):
-                f = r.get("fields", {})
-                daten["haeuser"].append({"id": r["id"], **{k: wert(f, hf.get(k)) for k in
-                                                           ("name", "kuerzel", "strasse", "plz", "ort", "anschrift")}})
-        if st.get("kostensaetze_tabelle"):
-            kf = st.get("kostensaetze_felder", {})
-            for r in self._datensaetze(st["kostensaetze_tabelle"]):
-                f = r.get("fields", {})
-                haus = wert(f, kf.get("haus"))
-                if isinstance(haus, dict):
-                    haus = haus.get("id")
-                daten["kostensaetze"].append({"id": r["id"], "text": str(wert(f, kf.get("bezeichnung")) or r["id"]),
-                                              "ab": datum_iso(str(wert(f, kf.get("ab")) or "")[:10]),
-                                              "haus_id": int(haus) if haus not in (None, "") else None})
+        haeuser = self._datensaetze(st["haeuser_tabelle"]) if st.get("haeuser_tabelle") else []
+        ks = self._datensaetze(st["kostensaetze_tabelle"]) if st.get("kostensaetze_tabelle") else []
+        daten = stammdaten_aufbereiten(haeuser, ks, {"ninox": self.cfg, "kostensatz_abgleich":
+                                                     {"tage_pro_monat": self.cfg.get("_tage_pro_monat", 30.4)}})
+        daten["quelle"] = "Ninox"
         (ordner / "stammdaten.json").write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
         return daten
-
-    def bescheid_vorhanden(self, eltern_id: int, datum: str) -> bool:
-        b = self.cfg["bescheid"]
-        j, m, t = datum.split("-")
-        antwort = self._query(f"cnt(select '{b['tabelle']}' where number('{b['feld_eltern']}') = {eltern_id} "
-                              f"and '{b['felder']['datum']}' = date({int(j)}, {int(m)}, {int(t)}))")
-        try:
-            return int(float(antwort)) > 0
-        except (TypeError, ValueError):
-            return False
 
     # ---------------------------------------------------------------- Schreiben
     def _werte_aufloesen(self, tabelle: str, fields: dict) -> dict:
@@ -1307,7 +1563,7 @@ class Verarbeitung:
     def _protokoll(self, ein: str, aus: str, status: str, grund: str, e: Ergebnis) -> None:
         zeile = {"zeit": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eingang": ein, "ergebnis": aus,
                  "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in FELDER},
-                 "zeitraeume": e.zeitraeume, "notiz": e.notiz, "antragsart_hinweis": e.antragsart_hinweis,
+                 "zeitraeume": e.zeitraeume, "kostensatz": e.kostensatz_info, "notiz": e.notiz, "antragsart_hinweis": e.antragsart_hinweis,
                  "hinweise": e.hinweise, "quelle": e.quelle}
         if self.protokoll.exists():
             with open(self.protokoll, encoding="utf-8-sig", newline="") as fh:
