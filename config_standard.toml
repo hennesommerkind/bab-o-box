@@ -17,7 +17,10 @@ timeout_s = 300
 
 [ki]
 max_zeichen = 6000
-timeout_s = 180
+# Ohne Grafikkarte rechnet das Modell auf dem Prozessor – inkl. Laden kann das mehrere Minuten dauern
+timeout_s = 420
+# Wie lange das Modell nach einer Anfrage im Arbeitsspeicher bleibt ("0" = sofort freigeben, "10m" = 10 Minuten)
+keep_alive = '2m'
 
 [ueberwachung]
 stabil_warten_s = 3

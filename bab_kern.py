@@ -734,7 +734,9 @@ def ki_ergaenzen(text: str, e: Ergebnis, cfg: dict) -> Ergebnis:
         r = requests.post(
             k["url"].rstrip("/") + "/api/chat",
             json={"model": k["modell"], "messages": [{"role": "user", "content": prompt}],
-                  "format": schema, "stream": False, "options": {"temperature": 0}},
+                  "format": schema, "stream": False, "options": {"temperature": 0},
+                  # Modell nach kurzer Zeit wieder aus dem Arbeitsspeicher nehmen (wichtig bei 16 GB ohne Grafikkarte)
+                  "keep_alive": k.get("keep_alive", "2m")},
             timeout=k.get("timeout_s", 180),
         )
         r.raise_for_status()
