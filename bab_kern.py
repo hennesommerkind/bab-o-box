@@ -302,6 +302,7 @@ class Ergebnis:
     lebensunterhalt: list = field(default_factory=list)  # [[von, bis, "2.565,54"], ...] aus dem Berechnungsbogen
     kostensatz_info: str = ""  # Ergebnis des Kostensatz-Abgleichs (Anzeige)
     ks_treffer: dict = field(default_factory=dict)  # {abschnitt_von: {id, text, variante, haus_id, ab}}
+    ks_ohne: list = field(default_factory=list)  # Abschnitte, in denen laut Bescheid kein Wohnheim-KS gilt
     abschnitte: list = field(default_factory=list)  # [[von_iso, bis_iso, "1.234,56"], ...]
     zeitraeume: str = ""  # alle Tabellenzeilen, z. B. "01.10.2025–05.10.2025: 0,00 | 06.10.2025–31.03.2027: 2.015,00"
     hinweise: str = ""  # Auffälligkeiten bei der Erkennung
@@ -727,7 +728,7 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
 
     for von, _, _ in (e.abschnitte if e.haus_id is not None else []):
         k = kostensatz_kandidaten(cfg, von, e.haus_id, e.geburtsdatum)
-        if len(k) > 1 and von not in e.ks_treffer:
+        if len(k) > 1 and von not in e.ks_treffer and von not in e.ks_ohne:
             hinweise.append(f"Kostensatz ab {iso_zu_de(von)} nicht eindeutig ({', '.join(x['text'] for x in k)}) – "
                             "bitte in Ninox wählen")
     if (cfg.get("_stammdaten") or {}).get("kostensaetze") and not kostensaetze_fuer(cfg, e.haus_id) and e.abschnitte:
@@ -850,6 +851,7 @@ def kostensatz_abgleich(e: "Ergebnis", cfg: dict, hinweise: list[str]) -> str | 
         text = f"{iso_zu_de(von)}–{iso_zu_de(bis)}: {lu} − {_euro(pausch)} = {_euro(wert)} €"
         if wert <= 0 or not pausch:
             zeilen.append(text + " (kein Wohnheim-Kostensatz)")
+            e.ks_ohne.append(von)
             vorher = None
             continue
         kandidaten = []
@@ -865,6 +867,7 @@ def kostensatz_abgleich(e: "Ergebnis", cfg: dict, hinweise: list[str]) -> str | 
         kleinster = min((b for x in alle_ks for b in x["betraege"].values() if b), default=0)
         if not kandidaten and wert < 0.7 * kleinster:
             zeilen.append(text + " (deutlich unter jedem Wohnheim-Kostensatz – vermutlich Grundbedarf, nicht im Haus)")
+            e.ks_ohne.append(von)
             vorher = None
             continue
         if not kandidaten:
@@ -934,6 +937,7 @@ def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dic
     st = cfg["ninox"].get("stammdaten", {})
     hf, kf = st.get("haeuser_felder", {}), st.get("kostensaetze_felder", {})
     tage = float(cfg.get("kostensatz_abgleich", {}).get("tage_pro_monat", 30.4))
+    alt_tage = [float(t) for t in cfg.get("kostensatz_abgleich", {}).get("tage_alternativ", []) if float(t) != tage]
     w = lambda f, k: f.get(k) if k else None  # noqa: E731
     daten = {"geladen": datetime.now().strftime("%Y-%m-%d %H:%M"), "haeuser": [], "kostensaetze": []}
     for i, r in enumerate(haeuser_roh, 1):
@@ -966,6 +970,8 @@ def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dic
             v = _zahl_oder_none(w(f, feld))
             if v is not None and variante not in betraege:
                 betraege[variante] = round(v * tage, 2)
+                for alt in alt_tage:  # manche Häuser lassen "Tagessatz × 30 Tage" bescheinigen
+                    betraege[f"{variante} ×{alt:g}".strip()] = round(v * alt, 2)
         ab = datum_iso(str(w(f, kf.get("ab")) or "")[:10]) if kf.get("ab") else None
         daten["kostensaetze"].append({
             "id": r.get("id", i), "text": bez, "ab": ab or ks_ab_aus_bezeichnung(bez),
@@ -1135,7 +1141,8 @@ def ablage_plan(cfg: dict, e: "Ergebnis", dateiname: str, heute: str | None = No
             abschnitte.append({fa.get("beginn"): von, fa.get("ende"): bis,
                                fa.get("betrag"): betrag_zahl(betrag) if betrag else None,
                                fa.get("kostensatz"): ({"_ref": e.ks_treffer[von]["id"], "_text": e.ks_treffer[von]["text"]}
-                                                      if von in e.ks_treffer else kostensatz_waehlen(cfg, von, e.haus_id, e.geburtsdatum))})
+                                                      if von in e.ks_treffer else None if von in e.ks_ohne
+                                                      else kostensatz_waehlen(cfg, von, e.haus_id, e.geburtsdatum))})
 
     d = n["dokument"]
     fd = d["felder"]

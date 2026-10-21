@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 7
+version = 8
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -199,6 +199,7 @@ notiz_frist = 'Unterlagen.{0,300}?bis\s+zum\s+(\d{1,2}\.\d{1,2}\.\d{4})'
 # das Haus erkannt (auch ohne Anschrift) und eine Tagessatz-Änderung belegt.
 [kostensatz_abgleich]
 toleranz       = 0.05     # Euro Abweichung, die noch als Treffer gilt (Rundung)
+tage_alternativ = [30]   # zusätzlich prüfen: einige Häuser lassen "Tagessatz × 30 Tage" bescheinigen
 tage_pro_monat = 30.4     # für Kostensätze, die als Tagessatz hinterlegt sind (BA rechnet Tagessatz × 30,4)
 
 # Pauschale für sonstige Bedürfnisse – bei Rechtsänderung neuen Eintrag mit "ab" ergänzen
@@ -283,7 +284,7 @@ anschrift = ''                               # falls die Anschrift in EINEM Feld
 
 [ninox.stammdaten.kostensaetze_felder]
 bezeichnung = 'Bezeichnung'                  # z. B. "B-PB 01/26" – Gültigkeit wird aus "01/26" gelesen
-ab          = ''                             # eigenes Datumsfeld "gültig ab"? Sonst leer lassen
+ab          = 'Gültig ab'                    # Datumsfeld; leer -> Gültigkeit aus der Bezeichnung ("01/26")
 haus        = 'Kurzbezeichnung'              # Verknüpfung zum Haus (Name oder ID)
 verpflegung = 'Verpflegung Tag'              # Verpflegung je Tag (VP = × 30,4)
 
@@ -294,8 +295,7 @@ verpflegung = 'Verpflegung Tag'              # Verpflegung je Tag (VP = × 30,4)
 # DZ = 'Monatsbetrag DZ'
 
 [ninox.stammdaten.kostensaetze_felder.tagessaetze]
-# EZ = 'Tagessatz EZ'
-# DZ = 'Tagessatz DZ'
+'' = 'Entgeltsatz Tag'                        # ein Satz je Datensatz (EZ/DZ, VJ/MJ sind eigene Datensätze)
 
 # Nur ohne Stammdaten: Kostensätze aus dieser Liste ("name" = Auswahlwert in Ninox)
 [[ninox.kostensaetze]]
