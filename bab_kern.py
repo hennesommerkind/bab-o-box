@@ -1104,15 +1104,23 @@ class Verarbeitung:
                 p.mkdir(parents=True, exist_ok=True)
         self.protokoll = Path(o["protokoll"])
         self.ninox = None if testlauf else Ninox(cfg)
-        if self.ninox and cfg["ninox"].get("stammdaten", {}).get("haeuser_tabelle"):
-            alt = (cfg.get("_stammdaten") or {}).get("geladen", "")
-            if alt[:10] != datetime.now().strftime("%Y-%m-%d"):  # einmal täglich auffrischen
-                try:
-                    cfg["_stammdaten"] = self.ninox.stammdaten_laden(Path(cfg.get("_datenordner") or Path(cfg["ordner"]["protokoll"]).parent))
-                    log.info("Stammdaten aus Ninox geladen: %d Häuser, %d Kostensätze",
-                             len(cfg["_stammdaten"]["haeuser"]), len(cfg["_stammdaten"]["kostensaetze"]))
-                except Exception as ex:
-                    log.warning("Stammdaten konnten nicht geladen werden (%s) – nutze gespeicherten Stand", ex)
+        # Stammdaten werden NICHT hier geladen (würde den Programmstart blockieren),
+        # sondern über stammdaten_auffrischen() im Hintergrund bzw. im Überwachungslauf.
+
+    def stammdaten_auffrischen(self) -> None:
+        """Einmal täglich Häuser/Kostensätze aus Ninox holen. Fehler -> gespeicherter Stand bleibt."""
+        cfg = self.cfg
+        if not (self.ninox and cfg["ninox"].get("stammdaten", {}).get("haeuser_tabelle")):
+            return
+        if (cfg.get("_stammdaten") or {}).get("geladen", "")[:10] == datetime.now().strftime("%Y-%m-%d"):
+            return
+        try:
+            cfg["_stammdaten"] = self.ninox.stammdaten_laden(Path(cfg.get("_datenordner") or Path(cfg["ordner"]["protokoll"]).parent))
+            log.info("Stammdaten aus Ninox geladen: %d Häuser, %d Kostensätze",
+                     len(cfg["_stammdaten"]["haeuser"]), len(cfg["_stammdaten"]["kostensaetze"]))
+        except Exception as ex:
+            cfg.setdefault("_stammdaten", {})["geladen"] = datetime.now().strftime("%Y-%m-%d") + " (fehlgeschlagen)"
+            log.warning("Stammdaten konnten nicht geladen werden (%s) – nutze gespeicherten Stand", ex)
 
     # ---------------------------------------------------------------- einzelnes Dokument
     def datei(self, original: Path, vorgaben: dict | None = None) -> str:
@@ -1263,6 +1271,7 @@ class Verarbeitung:
         return [p for p in kandidaten if p.exists() and p.stat().st_size == groessen[p] > 0]
 
     def durchlauf(self) -> int:
+        self.stammdaten_auffrischen()
         dateien = self.bereite_dateien()
         for p in dateien:
             self.datei(p)
