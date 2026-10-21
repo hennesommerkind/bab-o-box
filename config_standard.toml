@@ -5,7 +5,9 @@
 #
 # version: wird bei neuen Programmversionen hochgezählt; eine ältere Datei im Benutzerprofil wird dann
 # gesichert und durch diese ersetzt. Eigene Änderungen bitte danach übertragen.
-version = 3
+version = 4
+# Aufbau des Ninox-Teils – solange gleich, werden eigene Ninox-Einstellungen bei Updates übernommen
+ninox_stand = 3
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -37,13 +39,17 @@ erforderliches_stichwort = 'Berufsausbildungsbeihilfe|BAB'
 # Änderungsbescheid ohne erkannten Grund, dessen Abschnitt genau am Stichtag eines neuen Kostensatzes beginnt
 # (s. ninox.kostensaetze) → nach "Prüfen", weil es vermutlich ein Änderungsbescheid TS ist. [] = abschalten
 verdacht_ts_bei = ['Änderung']
+# Wörter, die nie Teil eines Namens sind (Anschreiben an das Haus, Agentur …)
+name_sperrworte = ['Kolping', 'Jugendwohnen', 'Agentur', 'Arbeit', 'Bescheid', 'Leistung', 'Frau ', 'Herr ']
 
 [dateiname]
-# Platzhalter: {name} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
-#   {name}  = aus Ninox (name_ausdruck, s. u.), im Testlauf die Kundennummer
-#   {datum} = Bescheiddatum
+# Platzhalter: {name} {ninox_name} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
+#   {name}       = Name wie im Bescheid gelesen ("Nachname_Vorname"); nicht lesbar → Name aus Ninox → "ohne-Name"
+#                  Der Name dient NUR dem Dateinamen – die Zuordnung in Ninox läuft über Kundennummer/Geburtsdatum.
+#   {ninox_name} = Name aus Ninox (name_ausdruck, s. u.)
+#   {datum}      = Bescheiddatum
 # Gleiche Namen bekommen automatisch _2, _3 … angehängt.
-schema = '{kundennummer}_BAB-{kategorie}_{geburtsdatum}.pdf'
+schema = '{kundennummer}_BAB-{kategorie}_{name}.pdf'
 
 # --------------------------------------------------------------------------- Suchmuster
 # Werden alle angewendet; Gruppe 1 ist der Wert (Tabellenzeile: Gruppen 1–3).
@@ -66,6 +72,14 @@ bescheiddatum = [
 # "… zum Bescheid vom 03.12.2025" / "anbei erhalten Sie den Änderungsbescheid vom 03.12.2025" (zählt 1-fach je Fundstelle)
 bescheiddatum_fallback = [
   '(?:Bescheid|Berechnungsbogen\s+BAB)\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4})',
+]
+# Name der/des Auszubildenden – Gruppe 1. Wird geprüft (nur Buchstaben, 2–5 Wörter, keine Sperrworte).
+# NICHT "Guten Tag …" verwenden: bei Abtretung ist das Kolping als Empfänger.
+name = [
+  'Name,\s*Vorname\s*:?\s*([A-ZÄÖÜ][^\n(]{2,60}?)\s*(?:\(|\n|$)',
+  'Bescheid\s+f[üu]e?r\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
+  'Leistungsangelegenheit\s+([A-ZÄÖÜ][^\n,]{2,60}?)\s*,?\s*geb',
+  'Kundenname\s+([A-ZÄÖÜ][^\n]{2,60}?)\s+\d{3}\s?[A-Z]\s?\d{6}',
 ]
 geburtsdatum = [
   'geb\.?\s*am\s*(\d{1,2}\.\d{1,2}\.\d{4})',

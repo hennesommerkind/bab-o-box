@@ -21,7 +21,9 @@ Tip: if the resident table has a **Geburtsdatum** field, enter its name there. T
 
 ## Day-to-day
 - Just scan. The app picks up new PDFs from the input folder on its own.
-- **Übersicht** shows everything that was processed. Double-clicking a row opens the PDF.
+- **Übersicht** shows everything that was processed. Clicking a row shows what was read out on the right (name, customer number, dates, approval periods, notes); double-clicking opens the PDF.
+  **Auswahl entfernen** (or the Del key) removes selected rows from the list, **Liste leeren …** clears it completely. Only the list changes – PDFs and Ninox stay untouched; a backup of the old list is kept in the data folder.
+- File names contain the name as read from the notice (e.g. `022P425485_BAB-Änderung_Mustermann_Max.pdf`). The name is only used for the file name – matching in Ninox always runs via customer number and birth date.
 - **Prüfen (n)**: notices that weren't recognized clearly. Select one, check or correct the fields on the right, then **Mit diesen Angaben ablegen**. The reason tells you what's missing – e.g. "Kundennummer nicht eindeutig: 022P425485, 022P426485" means the number was read in two different ways; look it up in the PDF and enter it.
   If the customer number was simply missing in Ninox, add it there and click **Erneut automatisch versuchen**.
 - Files in **Fehler** have a technical problem (e.g. no network). Once it's fixed, move them back into the input folder.

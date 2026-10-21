@@ -35,7 +35,7 @@ from pypdf import PdfReader
 log = logging.getLogger("bab")
 
 APP_NAME = "BAB-Eingang"
-FELDER = ["kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag", "geburtsdatum"]
+FELDER = ["name", "kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag", "geburtsdatum"]
 MONATE = {"januar": 1, "februar": 2, "märz": 3, "marz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6, "juli": 7,
           "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12}
 DATUM_RE = r"\d{1,2}\.\d{1,2}\.\d{4}"
@@ -122,12 +122,27 @@ class Konfiguration:
                 alt = -1  # unlesbar -> ersetzen
             if alt >= neu:
                 return
+            alt_text = self.toml_pfad.read_text(encoding="utf-8", errors="replace")
             sicherung = self.toml_pfad.with_name(f"config.alt-{datetime.now():%Y%m%d-%H%M%S}.toml")
             shutil.move(self.toml_pfad, sicherung)
-            shutil.copy2(standard, self.toml_pfad)
+            neu_text = standard.read_text(encoding="utf-8")
+            # Ninox-Teil (Tabellen-/Feldnamen) übernehmen, wenn sich sein Aufbau nicht geändert hat
+            marke = "# --------------------------------------------------------------------------- Ninox"
+            uebernommen = False
+            try:
+                alt_stand = tomllib.loads(alt_text).get("ninox_stand", 3 if alt >= 3 else 0)
+                neu_stand = tomllib.loads(neu_text).get("ninox_stand", 0)
+                if alt_stand and alt_stand == neu_stand and marke in alt_text and marke in neu_text:
+                    kandidat = neu_text[:neu_text.index(marke)] + alt_text[alt_text.index(marke):]
+                    tomllib.loads(kandidat)  # muss gültig bleiben
+                    neu_text, uebernommen = kandidat, True
+            except Exception:
+                uebernommen = False
+            self.toml_pfad.write_text(neu_text, encoding="utf-8")
             self.migriert = (f"Die Regeldatei wurde auf Version {neu} aktualisiert. Deine bisherige Datei liegt gesichert unter\n"
-                             f"{sicherung}\n\nFalls du darin Ninox-Feldnamen oder Muster geändert hattest, bitte in die neue "
-                             f"config.toml übertragen (Einstellungen → Regeldatei bearbeiten).")
+                             f"{sicherung}\n\n" + ("Deine Ninox-Einstellungen (Tabellen, Felder, Zuordnung) wurden übernommen."
+                             if uebernommen else "Falls du darin Ninox-Feldnamen oder Muster geändert hattest, bitte in die neue "
+                             "config.toml übertragen (Einstellungen → Regeldatei bearbeiten)."))
         except Exception as ex:
             self.migriert = f"Regeldatei konnte nicht geprüft werden: {ex}"
 
@@ -153,6 +168,7 @@ class Konfiguration:
 
 @dataclass
 class Ergebnis:
+    name: str | None = None  # aus dem Bescheid gelesen, "Nachname, Vorname" – nur für Dateiname/Anzeige, NICHT für Ninox
     kundennummer: str | None = None
     kategorie: str | None = None
     bescheiddatum: str | None = None  # ISO JJJJ-MM-TT
@@ -352,6 +368,26 @@ def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
     return None
 
 
+NAME_GUELTIG = re.compile(r"^[A-ZÄÖÜ][A-Za-zÄÖÜäöüßéèáàçñ'\-]+(?:[ ,]+[A-Za-zÄÖÜäöüßéèáàçñ'\-]+){1,4}$")
+
+
+def name_lesen(text: str, cfg: dict) -> str | None:
+    """Name der/des Auszubildenden aus dem Bescheid als 'Nachname, Vorname'. Unsicher -> None."""
+    sperrworte = [w.lower() for w in cfg["regeln"].get("name_sperrworte", [])]
+    for m in alle(cfg["muster"].get("name", []), text):
+        roh = re.sub(r"\s+", " ", m.group(1)).strip(" ,.;:")
+        if not NAME_GUELTIG.match(roh) or any(w in roh.lower() for w in sperrworte):
+            continue
+        if "," in roh:
+            nach, vor = [t.strip() for t in roh.split(",", 1)]
+        else:
+            teile = roh.split(" ")
+            vor, nach = " ".join(teile[:-1]), teile[-1]
+        if nach and vor:
+            return f"{nach}, {vor}"
+    return None
+
+
 def unterart_bestimmen(text: str, cfg: dict, kategorie: str | None) -> tuple[str | None, str | None]:
     """Verfeinert z. B. 'Änderung' zu 'Änderung BAföG' oder 'Änderung TS'. Passen mehrere -> Hinweis, keine Unterart."""
     treffer = []
@@ -418,6 +454,9 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
         e.bescheiddatum = wert
     elif wert:
         hinweise.append("Bescheiddatum nicht eindeutig: " + ", ".join(sorted({d for d, _ in kandidaten})))
+
+    # Name (nur Dateiname/Anzeige)
+    e.name = name_lesen(text, cfg)
 
     # Geburtsdatum
     m = erstes(m_cfg.get("geburtsdatum", []), text)
@@ -814,7 +853,7 @@ class Verarbeitung:
             if ("nicht eindeutig" in e.hinweise or "Verdacht:" in e.hinweise) and not vorgaben:
                 raise PruefFall(e.hinweise)
 
-            bewohner_id, name = None, e.kundennummer or f"geb-{e.geburtsdatum}"
+            bewohner_id, ninox_name = None, None
             if self.ninox:
                 treffer = self.ninox.bewohner_finden(e.kundennummer, e.geburtsdatum)
                 schluessel = f"Kundennummer {e.kundennummer}" if e.kundennummer else f"Geburtsdatum {iso_zu_de(e.geburtsdatum)}"
@@ -831,10 +870,11 @@ class Verarbeitung:
                 if not e.kundennummer and t["kundennummer"]:
                     e.kundennummer = t["kundennummer"]
                     log.info("Kundennummer %s über Geburtsdatum aus Ninox übernommen", e.kundennummer)
-                bewohner_id, name = t["id"], t["name"]
+                bewohner_id, ninox_name = t["id"], t["name"]
 
             dateiname = sicherer_dateiname(self.cfg["dateiname"]["schema"].format(
-                name=name, kategorie=e.kategorie, datum=e.bescheiddatum or "ohne-Datum",
+                name=re.sub(r",\s*", "_", e.name) if e.name else (ninox_name or "ohne-Name"),
+                ninox_name=ninox_name or "ohne-Ninox", kategorie=e.kategorie, datum=e.bescheiddatum or "ohne-Datum",
                 kundennummer=e.kundennummer or "ohne-Kdnr", geburtsdatum=e.geburtsdatum or "ohne-Geburtsdatum",
                 von=e.zeitraum_von or "", bis=e.zeitraum_bis or ""))
             if not dateiname.lower().endswith(".pdf"):
@@ -889,6 +929,13 @@ class Verarbeitung:
         zeile = {"zeit": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "eingang": ein, "ergebnis": aus,
                  "status": status, "grund": grund, **{f: getattr(e, f) or "" for f in FELDER},
                  "zeitraeume": e.zeitraeume, "hinweise": e.hinweise, "quelle": e.quelle}
+        if self.protokoll.exists():
+            with open(self.protokoll, encoding="utf-8-sig", newline="") as fh:
+                kopf = next(csv.reader(fh, delimiter=";"), [])
+            if kopf != list(zeile):  # neue Programmversion mit anderen Spalten
+                bisherige = protokoll_lesen(self.protokoll, anzahl=10**9)
+                self.protokoll.rename(self.protokoll.with_name(f"protokoll-bis-{datetime.now():%Y%m%d-%H%M%S}.csv"))
+                protokoll_schreiben(self.protokoll, bisherige, list(zeile))
         neu = not self.protokoll.exists()
         with open(self.protokoll, "a", newline="", encoding="utf-8-sig") as fh:
             w = csv.DictWriter(fh, fieldnames=list(zeile), delimiter=";")
@@ -926,6 +973,38 @@ class Verarbeitung:
                     pass
             faelle.append((p, info))
         return faelle
+
+
+def protokoll_schreiben(pfad: Path, zeilen: list[dict], spalten: list[str] | None = None) -> None:
+    spalten = spalten or (list(zeilen[0]) if zeilen else [])
+    tmp = pfad.with_suffix(".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=spalten, delimiter=";", extrasaction="ignore")
+        w.writeheader()
+        for z in zeilen:
+            w.writerow({k: z.get(k, "") for k in spalten})
+    os.replace(tmp, pfad)
+
+
+def _schluessel(z: dict) -> tuple:
+    return tuple(str(z.get(k) or "") for k in ("zeit", "eingang", "ergebnis", "status"))
+
+
+def protokoll_entfernen(pfad: Path, weg: list[dict]) -> None:
+    """Entfernt einzelne Einträge aus der Verarbeitungsliste (Dateien und Ninox bleiben unberührt)."""
+    if not pfad.exists():
+        return
+    with open(pfad, encoding="utf-8-sig", newline="") as fh:
+        r = csv.DictReader(fh, delimiter=";")
+        spalten, zeilen = r.fieldnames or [], list(r)
+    raus = {_schluessel(z) for z in weg}
+    protokoll_schreiben(pfad, [z for z in zeilen if _schluessel(z) not in raus], spalten)
+
+
+def protokoll_leeren(pfad: Path) -> None:
+    """Leert die Verarbeitungsliste; die bisherige wird als Sicherung umbenannt."""
+    if pfad.exists():
+        pfad.rename(pfad.with_name(f"protokoll-geleert-{datetime.now():%Y%m%d-%H%M%S}.csv"))
 
 
 def protokoll_lesen(pfad: Path, anzahl: int = 300) -> list[dict]:

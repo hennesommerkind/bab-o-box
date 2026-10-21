@@ -108,6 +108,7 @@ class App(tk.Tk):
         self.nach_stopp = None
         self.zaehler = {"ok": 0, "pruefen": 0, "fehler": 0}
         self.pruef_pfade: dict[str, Path] = {}
+        self.zeilen: dict[str, dict] = {}
 
         self.var_test = tk.BooleanVar(value=bool(self.k.einstellungen.get("testlauf", True)))
 
@@ -158,15 +159,24 @@ class App(tk.Tk):
         self.lbl_zaehler = ttk.Label(f, text="", style="Hinweis.TLabel")
         self.lbl_zaehler.pack(anchor="w", pady=(0, 6))
 
-        spalten = ("zeit", "status", "ergebnis", "kategorie", "kundennummer", "grund")
-        titel = ("Zeit", "Status", "Datei", "Kategorie", "Kundennr.", "Hinweis")
-        breiten = (130, 70, 330, 100, 100, 260)
-        rahmen = ttk.Frame(f)
+        spalten = ("zeit", "status", "ergebnis", "kategorie", "grund")
+        titel = ("Zeit", "Status", "Datei", "Art", "Hinweis")
+        breiten = (120, 65, 300, 110, 200)
+        teiler = ttk.PanedWindow(f, orient="horizontal")
+        teiler.pack(fill="both", expand=True)
+
+        links = ttk.Frame(teiler)
+        liste_kopf = ttk.Frame(links)
+        liste_kopf.pack(fill="x", pady=(0, 4))
+        ttk.Label(liste_kopf, text="Verarbeitete Dokumente").pack(side="left")
+        ttk.Button(liste_kopf, text="Liste leeren …", command=self._liste_leeren).pack(side="right")
+        ttk.Button(liste_kopf, text="Auswahl entfernen", command=self._auswahl_entfernen).pack(side="right", padx=4)
+        rahmen = ttk.Frame(links)
         rahmen.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(rahmen, columns=spalten, show="headings", height=12)
-        for s, t, b in zip(spalten, titel, breiten):
-            self.tree.heading(s, text=t)
-            self.tree.column(s, width=b, anchor="w", stretch=(s in ("ergebnis", "grund")))
+        for sp, t, b in zip(spalten, titel, breiten):
+            self.tree.heading(sp, text=t)
+            self.tree.column(sp, width=b, anchor="w", stretch=(sp in ("ergebnis", "grund")))
         sb = ttk.Scrollbar(rahmen, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -175,20 +185,40 @@ class App(tk.Tk):
         self.tree.tag_configure("pruefen", foreground="#b25e00")
         self.tree.tag_configure("fehler", foreground="#b00020")
         self.tree.bind("<Double-1>", self._eintrag_oeffnen)
+        self.tree.bind("<<TreeviewSelect>>", self._details_zeigen)
+        self.tree.bind("<Delete>", lambda _e: self._auswahl_entfernen())
+        teiler.add(links, weight=3)
+
+        rechts = ttk.LabelFrame(teiler, text="Ausgelesene Angaben", padding=8)
+        self.txt_details = tk.Text(rechts, width=42, wrap="word", font=("Segoe UI", 10), relief="flat",
+                                   background=self.cget("background"), state="disabled", cursor="arrow")
+        self.txt_details.tag_configure("feld", foreground="#666")
+        self.txt_details.tag_configure("titel", font=("Segoe UI", 10, "bold"))
+        self.txt_details.tag_configure("warn", foreground="#b25e00")
+        self.txt_details.pack(fill="both", expand=True)
+        ttk.Button(rechts, text="PDF öffnen", command=lambda: self._eintrag_oeffnen(None)).pack(anchor="w", pady=(6, 0))
+        teiler.add(rechts, weight=2)
+        self._details_schreiben([("", "Ein Dokument in der Liste anklicken.", "feld")])
 
         ttk.Label(f, text="Protokoll").pack(anchor="w", pady=(8, 2))
-        self.txt_log = ScrolledText(f, height=7, font=("Consolas", 9), state="disabled")
+        self.txt_log = ScrolledText(f, height=6, font=("Consolas", 9), state="disabled")
         self.txt_log.pack(fill="x")
 
     def _eintrag_einfuegen(self, z: dict, oben: bool = True):
-        self.tree.insert("", 0 if oben else "end", values=(
+        iid = self.tree.insert("", 0 if oben else "end", values=(
             z.get("zeit", ""), STATUS_TEXT.get(z.get("status"), z.get("status")), z.get("ergebnis", ""),
-            z.get("kategorie", ""), z.get("kundennummer", ""), z.get("grund", "")), tags=(z.get("status"),))
+            z.get("kategorie", ""), z.get("grund", "") or z.get("hinweise", "")), tags=(z.get("status"),))
+        self.zeilen[iid] = z
 
     def _protokoll_laden(self):
-        heute = kern.datetime.now().strftime("%Y-%m-%d")
         for z in reversed(kern.protokoll_lesen(Path(self.k.cfg["ordner"]["protokoll"]))):
             self._eintrag_einfuegen(z, oben=False)
+        self._zaehler_neu()
+
+    def _zaehler_neu(self):
+        heute = kern.datetime.now().strftime("%Y-%m-%d")
+        self.zaehler = {"ok": 0, "pruefen": 0, "fehler": 0}
+        for z in self.zeilen.values():
             if z.get("zeit", "").startswith(heute) and z.get("status") in self.zaehler:
                 self.zaehler[z["status"]] += 1
         self._zaehler_anzeigen()
@@ -199,15 +229,86 @@ class App(tk.Tk):
         self.lbl_zaehler.configure(
             text=f"Heute: {z['ok']} abgelegt · {z['pruefen']} zu prüfen · {z['fehler']} Fehler      Modus: {modus}")
 
+    # ------------------------------------------------------------------ Details & Liste
+    def _details_schreiben(self, teile: list[tuple[str, str, str]]):
+        t = self.txt_details
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        for feld, wert, tag in teile:
+            if feld:
+                t.insert("end", f"{feld}\n", "feld")
+            t.insert("end", f"{wert}\n\n", tag)
+        t.configure(state="disabled")
+
+    def _details_zeigen(self, _evt=None):
+        sel = self.tree.selection()
+        if not sel or sel[0] not in self.zeilen:
+            return
+        z = self.zeilen[sel[0]]
+        de = lambda w: iso_zu_de(w) if w else "–"  # noqa: E731
+        teile = [("", f"{STATUS_TEXT.get(z.get('status'), z.get('status'))} · {z.get('ergebnis', '')}", "titel")]
+        if z.get("grund"):
+            teile.append(("Grund", z["grund"], "warn"))
+        if z.get("hinweise") and z.get("hinweise") != z.get("grund"):
+            teile.append(("Hinweise", z["hinweise"].replace("; ", "\n"), "warn"))
+        teile += [
+            ("Name (aus dem Bescheid)", z.get("name") or "–", ""),
+            ("Kundennummer", z.get("kundennummer") or "–", ""),
+            ("Geburtsdatum", de(z.get("geburtsdatum")), ""),
+            ("Art", z.get("kategorie") or "–", ""),
+            ("Bescheiddatum", de(z.get("bescheiddatum")), ""),
+            ("Bewilligt", f"{de(z.get('zeitraum_von'))} – {de(z.get('zeitraum_bis'))}", ""),
+            ("BAB monatlich (aktuell)", f"{z['betrag']} €" if z.get("betrag") else "–", ""),
+        ]
+        if z.get("zeitraeume"):
+            teile.append(("Bewilligungsabschnitte", z["zeitraeume"].replace(" | ", "\n"), ""))
+        teile += [("Erkannt durch", {"regeln": "Regeln", "regeln+ki": "Regeln + KI", "manuell": "manuelle Eingabe"}
+                   .get(z.get("quelle"), z.get("quelle") or "–"), ""),
+                  ("Eingangsdatei · Zeit", f"{z.get('eingang', '')} · {z.get('zeit', '')}", "feld")]
+        self._details_schreiben(teile)
+
+    def _auswahl_entfernen(self):
+        sel = [i for i in self.tree.selection() if i in self.zeilen]
+        if not sel:
+            messagebox.showinfo("Entfernen", "Bitte zuerst Einträge in der Liste auswählen (mehrere mit Strg).")
+            return
+        weg = [self.zeilen[i] for i in sel]
+        try:
+            kern.protokoll_entfernen(Path(self.k.cfg["ordner"]["protokoll"]), weg)
+        except Exception as ex:
+            messagebox.showerror("Entfernen", str(ex))
+            return
+        for i in sel:
+            self.tree.delete(i)
+            self.zeilen.pop(i, None)
+        self._zaehler_neu()
+        self._details_schreiben([("", f"{len(sel)} Eintrag/Einträge aus der Liste entfernt.", "feld")])
+
+    def _liste_leeren(self):
+        if not self.zeilen:
+            return
+        if not messagebox.askyesno("Liste leeren", f"Alle {len(self.zeilen)} Einträge aus der Liste entfernen?\n\n"
+                                   "Die PDFs in den Ordnern und die Daten in Ninox bleiben unverändert. "
+                                   "Die bisherige Liste wird als Sicherung im Datenordner aufbewahrt."):
+            return
+        try:
+            kern.protokoll_leeren(Path(self.k.cfg["ordner"]["protokoll"]))
+        except Exception as ex:
+            messagebox.showerror("Liste leeren", str(ex))
+            return
+        self.tree.delete(*self.tree.get_children())
+        self.zeilen.clear()
+        self._zaehler_neu()
+        self._details_schreiben([("", "Liste geleert.", "feld")])
+
     def _eintrag_oeffnen(self, _evt):
         sel = self.tree.selection()
-        if not sel:
+        if not sel or sel[0] not in self.zeilen:
             return
-        werte = self.tree.item(sel[0], "values")
-        status = {v: k for k, v in STATUS_TEXT.items()}.get(werte[1], "ok")
-        ordner = {"ok": "verarbeitet", "pruefen": "pruefen", "fehler": "fehler"}[status]
-        pfad = Path(self.k.cfg["ordner"][ordner]) / werte[2]
-        if pfad.exists():
+        z = self.zeilen[sel[0]]
+        ordner = {"ok": "verarbeitet", "pruefen": "pruefen", "fehler": "fehler"}.get(z.get("status"), "verarbeitet")
+        pfad = Path(self.k.cfg["ordner"][ordner]) / z.get("ergebnis", "")
+        if pfad.is_file():
             kern.ordner_oeffnen(pfad)
         else:
             messagebox.showinfo("Nicht gefunden", f"Die Datei liegt nicht mehr dort:\n{pfad}")
@@ -244,7 +345,8 @@ class App(tk.Tk):
         self.lbl_grund.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         self.p_vars: dict[str, tk.StringVar] = {}
-        felder = [("kundennummer", "Kundennummer"), ("geburtsdatum", "Geburtsdatum"), ("kategorie", "Kategorie"),
+        felder = [("name", "Name (nur Dateiname)"), ("kundennummer", "Kundennummer"), ("geburtsdatum", "Geburtsdatum"),
+                  ("kategorie", "Kategorie"),
                   ("bescheiddatum", "Bescheiddatum"), ("zeitraum_von", "Bewilligt von"), ("zeitraum_bis", "Bewilligt bis"),
                   ("betrag", "Betrag mtl. (€)")]
         for i, (key, text) in enumerate(felder, start=1):
@@ -321,6 +423,7 @@ class App(tk.Tk):
             if not messagebox.askyesno("Kundennummer", f"„{kdnr}“ hat nicht das übliche Format 123A456789.\nTrotzdem verwenden?"):
                 return
         vorgaben["kundennummer"] = kdnr
+        vorgaben["name"] = w["name"]
         vorgaben["kategorie"] = w["kategorie"]
         for key in ("bescheiddatum", "zeitraum_von", "zeitraum_bis", "geburtsdatum"):
             if w[key]:
@@ -650,9 +753,7 @@ class App(tk.Tk):
                     self.txt_log.configure(state="disabled")
                 elif art == "eintrag":
                     self._eintrag_einfuegen(daten)
-                    if daten["status"] in self.zaehler:
-                        self.zaehler[daten["status"]] += 1
-                    self._zaehler_anzeigen()
+                    self._zaehler_neu()
                     self._pruefen_aktualisieren()
                 elif art == "fertig":
                     self.config(cursor="")
