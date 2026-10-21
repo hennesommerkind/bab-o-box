@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 8
+version = 9
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -199,10 +199,11 @@ notiz_frist = 'Unterlagen.{0,300}?bis\s+zum\s+(\d{1,2}\.\d{1,2}\.\d{4})'
 # das Haus erkannt (auch ohne Anschrift) und eine Tagessatz-Änderung belegt.
 [kostensatz_abgleich]
 toleranz       = 0.05     # Euro Abweichung, die noch als Treffer gilt (Rundung)
-tage_alternativ = [30]   # zusätzlich prüfen: einige Häuser lassen "Tagessatz × 30 Tage" bescheinigen
+tage_alternativ = []     # weitere Teiler prüfen, z. B. [30] – Kolping rechnet konsequent Monatssatz / 30,4
 tage_pro_monat = 30.4     # für Kostensätze, die als Tagessatz hinterlegt sind (BA rechnet Tagessatz × 30,4)
 
-# Pauschale für sonstige Bedürfnisse – bei Rechtsänderung neuen Eintrag mit "ab" ergänzen
+# Pauschale für sonstige Bedürfnisse – nur Ersatz, wenn die Ninox-Tabelle „Rechtslage“ fehlt oder
+# der Bescheid vor der ältesten Rechtslage liegt
 [[kostensatz_abgleich.pauschalen]]
 ab     = '2000-01-01'
 betrag = 115.00
@@ -272,6 +273,7 @@ kostensatz = 'Kostensatz'
 [ninox.stammdaten]
 haeuser_tabelle      = 'Häuser'
 kostensaetze_tabelle = 'Kostensätze'
+rechtslage_tabelle   = 'Rechtslage'          # Pauschale sonstige Bedürfnisse je Rechtslage; fehlt sie -> Wert unten
 
 # Feldnamen wie im Ninox-Export (Haus1.csv / Kostensatz1.csv)
 [ninox.stammdaten.haeuser_felder]
@@ -296,6 +298,11 @@ verpflegung = 'Verpflegung Tag'              # Verpflegung je Tag (VP = × 30,4)
 
 [ninox.stammdaten.kostensaetze_felder.tagessaetze]
 '' = 'Entgeltsatz Tag'                        # ein Satz je Datensatz (EZ/DZ, VJ/MJ sind eigene Datensätze)
+
+[ninox.stammdaten.rechtslage_felder]
+ab        = 'Abbildung Rechtslage ab'
+pauschale = 'Höhe sonst. Bedürfnisse'
+version   = 'Version'
 
 # Nur ohne Stammdaten: Kostensätze aus dieser Liste ("name" = Auswahlwert in Ninox)
 [[ninox.kostensaetze]]

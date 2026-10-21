@@ -822,8 +822,12 @@ class App(tk.Tk):
         if not st:
             return "Stammdaten: noch nicht geladen"
         haeuser = ", ".join(h.get("kuerzel") or h.get("name") or "?" for h in st.get("haeuser", [])[:8])
+        rl = st.get("rechtslage") or []
+        neueste = max(rl, key=lambda r: r["ab"]) if rl else None
         return (f"Stammdaten vom {st.get('geladen', '?')}: {len(st.get('haeuser', []))} Häuser ({haeuser}), "
-                f"{len(st.get('kostensaetze', []))} Kostensätze")
+                f"{len(st.get('kostensaetze', []))} Kostensätze"
+                + (f", Rechtslage {neueste.get('version') or ''} ab {kern.iso_zu_de(neueste['ab'])} "
+                   f"(Pauschale {neueste.get('pauschale')} €)" if neueste else ", Rechtslage: Standardwert 115 €"))
 
     def _stammdaten_laden(self):
         cfg = self._formular_cfg()
@@ -859,8 +863,11 @@ class App(tk.Tk):
         ks = filedialog.askopenfilename(title="2/2: Kostensätze-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
         if not ks:
             return
+        rl = filedialog.askopenfilename(title="3/3 (optional): Rechtslage-Export (CSV) – Abbrechen = überspringen",
+                                        filetypes=[("CSV", "*.csv")])
         try:
-            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks), self._formular_cfg(), self.k.ordner)
+            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks), self._formular_cfg(), self.k.ordner,
+                                            Path(rl) if rl else None)
         except Exception as fehler:  # noqa: BLE001
             messagebox.showerror("Stammdaten", f"CSV konnte nicht gelesen werden:\n{fehler}")
             return

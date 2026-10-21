@@ -828,7 +828,20 @@ def lebensunterhalt_lesen(text: str) -> list[list]:
     return erg
 
 
+def rechtslage_zum(cfg: dict, datum: str | None) -> dict | None:
+    """Gültige Rechtslage (aus Ninox-Tabelle „Rechtslage“) zum Datum -> {ab, pauschale, version}."""
+    beste = None
+    for r in sorted((cfg.get("_stammdaten") or {}).get("rechtslage", []), key=lambda r: r["ab"]):
+        if datum and r["ab"] <= datum and r.get("pauschale") is not None:
+            beste = r
+    return beste
+
+
 def pauschale_sonstige(cfg: dict, datum: str | None) -> float:
+    """Pauschale für sonstige Bedürfnisse: zuerst eure Rechtslage-Tabelle, sonst Standardwert aus den Regeln."""
+    r = rechtslage_zum(cfg, datum)
+    if r:
+        return float(r["pauschale"])
     beste = 0.0
     for p in sorted(cfg.get("kostensatz_abgleich", {}).get("pauschalen", []), key=lambda p: p["ab"]):
         if datum and p["ab"] <= datum:
@@ -848,7 +861,9 @@ def kostensatz_abgleich(e: "Ergebnis", cfg: dict, hinweise: list[str]) -> str | 
     for von, bis, lu in e.lebensunterhalt:
         pausch = pauschale_sonstige(cfg, von)
         wert = round(_zahl(lu) - pausch, 2)
-        text = f"{iso_zu_de(von)}–{iso_zu_de(bis)}: {lu} − {_euro(pausch)} = {_euro(wert)} €"
+        rl = rechtslage_zum(cfg, von)
+        text = (f"{iso_zu_de(von)}–{iso_zu_de(bis)}: {lu} − {_euro(pausch)}"
+                + (f" (Rechtslage {rl['version']})" if rl and rl.get("version") else "") + f" = {_euro(wert)} €")
         if wert <= 0 or not pausch:
             zeilen.append(text + " (kein Wohnheim-Kostensatz)")
             e.ks_ohne.append(von)
@@ -932,7 +947,8 @@ def _zahl_oder_none(v) -> float | None:
     return None
 
 
-def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dict) -> dict:
+def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dict,
+                           rechtslage_roh: list[dict] | None = None) -> dict:
     """Aus Datensätzen (API: {id, fields}) bzw. CSV-Zeilen die interne Form bauen."""
     st = cfg["ninox"].get("stammdaten", {})
     hf, kf = st.get("haeuser_felder", {}), st.get("kostensaetze_felder", {})
@@ -977,10 +993,19 @@ def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dic
             "id": r.get("id", i), "text": bez, "ab": ab or ks_ab_aus_bezeichnung(bez),
             "haus_id": int(haus) if haus not in (None, "") and str(haus).isdigit() else None,
             "betraege": betraege, "verpflegung_tag": _zahl_oder_none(w(f, kf.get("verpflegung")))})
+    rf = st.get("rechtslage_felder", {})
+    for r in rechtslage_roh or []:
+        f = r.get("fields", r)
+        ab = datum_iso(str(w(f, rf.get("ab")) or "")[:10])
+        if ab:
+            daten.setdefault("rechtslage", []).append({
+                "ab": ab, "pauschale": _zahl_oder_none(w(f, rf.get("pauschale"))),
+                "version": str(w(f, rf.get("version")) or "").strip() or None})
     return daten
 
 
-def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path) -> dict:
+def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path,
+                       rechtslage_csv: Path | None = None) -> dict:
     """Ninox-Exporte (CSV, Semikolon) der Häuser- und Kostensatz-Tabelle einlesen – ohne API-Zugang."""
     def lesen(p: Path) -> list[dict]:
         roh = p.read_bytes()
@@ -997,7 +1022,10 @@ def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path, cfg: dict, ordner: Path) ->
         nr = zeile.get("Nr") or zeile.get("Id") or zeile.get("ID")
         if nr and str(nr).strip().isdigit():
             zeile["id"] = int(nr)
-    daten = stammdaten_aufbereiten(haeuser, lesen(ks_csv), cfg)
+    alt = (cfg.get("_stammdaten") or {}).get("rechtslage")
+    daten = stammdaten_aufbereiten(haeuser, lesen(ks_csv), cfg, lesen(rechtslage_csv) if rechtslage_csv else None)
+    if not rechtslage_csv and alt:
+        daten["rechtslage"] = alt  # früher eingelesene Rechtslage behalten
     daten["quelle"] = "CSV"
     (ordner / "stammdaten.json").write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
     return daten
@@ -1342,8 +1370,15 @@ class Ninox:
         st = self.cfg.get("stammdaten", {})
         haeuser = self._datensaetze(st["haeuser_tabelle"]) if st.get("haeuser_tabelle") else []
         ks = self._datensaetze(st["kostensaetze_tabelle"]) if st.get("kostensaetze_tabelle") else []
+        rechtslage = None
+        if st.get("rechtslage_tabelle"):
+            try:
+                rechtslage = self._datensaetze(st["rechtslage_tabelle"])
+            except Exception as ex:  # optional – fehlt die Tabelle, gilt der Standardwert
+                log.warning("Rechtslage nicht geladen (%s) – nutze Pauschale aus den Regeln", ex)
         daten = stammdaten_aufbereiten(haeuser, ks, {"ninox": self.cfg, "kostensatz_abgleich":
-                                                     {"tage_pro_monat": self.cfg.get("_tage_pro_monat", 30.4)}})
+                                                     {"tage_pro_monat": self.cfg.get("_tage_pro_monat", 30.4)}},
+                                       rechtslage)
         daten["quelle"] = "Ninox"
         (ordner / "stammdaten.json").write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
         return daten
