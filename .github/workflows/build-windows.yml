@@ -50,6 +50,25 @@ jobs:
           Copy-Item LIESMICH_ANWENDER.md dist\BAB-O-BOX\
           exit 0
 
+      - name: Selbsttest (Start wie bei einem Update von BAB-Eingang)
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata"
+          $alt = "$env:APPDATA\BAB-Eingang"
+          New-Item -ItemType Directory -Force $alt | Out-Null
+          Copy-Item regeln_alt\standard_2a78395.toml "$alt\config.toml"
+          '{"testlauf": true, "ordner": {"eingang": "' + ($env:RUNNER_TEMP -replace '\\','/') + '/scan"}}' | Set-Content "$alt\einstellungen.json"
+          "zeit;eingang;ergebnis;status;grund;kundennummer`n2026-10-20 10:00:00;a.pdf;b.pdf;ok;;022P425485" | Set-Content "$alt\protokoll.csv"
+          $ergebnis = "$env:RUNNER_TEMP\selbsttest.txt"
+          $p = Start-Process -FilePath "dist\BAB-O-BOX\BAB-O-BOX.exe" -ArgumentList "--selbsttest", $ergebnis -PassThru
+          if (-not $p.WaitForExit(90000)) { Stop-Process $p -Force; Write-Host "ZEITÜBERSCHREITUNG"; }
+          Write-Host "--- Ergebnis ---"
+          if (Test-Path $ergebnis) { Get-Content $ergebnis } else { Write-Host "keine Ergebnisdatei" }
+          foreach ($f in "$env:APPDATA\BAB-O-BOX\absturz.txt", "dist\BAB-O-BOX\absturz.txt", "$env:APPDATA\BAB-O-BOX\bab_eingang.log") {
+            if (Test-Path $f) { Write-Host "--- $f ---"; Get-Content $f }
+          }
+          if (-not ((Test-Path $ergebnis) -and ((Get-Content $ergebnis -First 1) -eq "OK"))) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: BAB-O-BOX-Windows

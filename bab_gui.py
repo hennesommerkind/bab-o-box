@@ -20,7 +20,40 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-import bab_kern as kern
+
+def notfall_protokoll(fehler: str) -> list[str]:
+    """Startfehler aufschreiben – auch wenn sonst noch nichts funktioniert."""
+    orte = [Path(os.environ.get("APPDATA") or Path.home()) / "BAB-O-BOX" / "absturz.txt"]
+    if getattr(sys, "frozen", False):
+        orte.append(Path(sys.executable).resolve().parent / "absturz.txt")
+    geschrieben = []
+    for ort in orte:
+        try:
+            ort.parent.mkdir(parents=True, exist_ok=True)
+            ort.write_text(fehler, encoding="utf-8")
+            geschrieben.append(str(ort))
+        except Exception:
+            pass
+    return geschrieben
+
+
+def notfall_meldung(fehler: str) -> None:
+    orte = notfall_protokoll(fehler)
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("BAB-O-BOX", "Das Programm konnte nicht starten.\n\n" + fehler[-1500:]
+                             + ("\n\nDetails gespeichert in:\n" + "\n".join(orte) if orte else ""))
+        root.destroy()
+    except Exception:
+        pass
+
+
+try:
+    import bab_kern as kern
+except Exception:
+    notfall_meldung(traceback.format_exc())
+    raise SystemExit(1)
 
 log = logging.getLogger("bab")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -104,7 +137,7 @@ def text_fenster(eltern, titel: str, inhalt: str) -> None:
 # =========================================================================== Hauptfenster
 
 class App(tk.Tk):
-    def __init__(self, minimiert: bool = False):
+    def __init__(self, minimiert: bool = False, selbsttest: bool = False):
         super().__init__()
         self.title("BAB-O-BOX")
         self.geometry("1060x700")
@@ -144,7 +177,7 @@ class App(tk.Tk):
         self.after(200, self._queue_abholen)
         self.protocol("WM_DELETE_WINDOW", self._beenden)
 
-        if self.k.migriert:
+        if self.k.migriert and not selbsttest:
             self.after(300, lambda: messagebox.showinfo("Regeldatei aktualisiert", self.k.migriert))
         if self.k.einstellungen["ueberwachung"].get("beim_start_starten"):
             self.after(800, self.start)
@@ -842,6 +875,26 @@ class App(tk.Tk):
 
 # =========================================================================== Start
 
+def selbsttest(app: "App", ziel: Path) -> None:
+    """Für den automatischen Test beim Bauen: alle Reiter einmal anzeigen, dann beenden."""
+    try:
+        for i in range(len(app.nb.tabs())):
+            app.nb.select(i)
+            app.update()
+        kinder = app.tree.get_children()
+        if kinder:
+            app.tree.selection_set(kinder[0])
+            app._details_zeigen()
+        app._stammdaten_text()
+        app.update()
+        ziel.write_text(f"OK\nEinträge: {len(kinder)}\nDatenordner: {app.k.ordner}\nMeldung: {app.k.migriert or '-'}\n",
+                        encoding="utf-8")
+    except Exception:
+        ziel.write_text("FEHLER\n" + traceback.format_exc(), encoding="utf-8")
+    app.stopp.set()
+    app.destroy()
+
+
 def main():
     if os.name == "nt":
         try:
@@ -849,17 +902,20 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
+    test_ziel = None
+    if "--selbsttest" in sys.argv:
+        i = sys.argv.index("--selbsttest")
+        test_ziel = Path(sys.argv[i + 1]) if i + 1 < len(sys.argv) else Path("selbsttest.txt")
     try:
-        App(minimiert="--minimiert" in sys.argv).mainloop()
+        app = App(minimiert="--minimiert" in sys.argv, selbsttest=bool(test_ziel))
+        if test_ziel:
+            app.after(1500, lambda: selbsttest(app, test_ziel))
+        app.mainloop()
     except Exception:
         fehler = traceback.format_exc()
-        try:
-            (kern.daten_ordner() / "absturz.txt").write_text(fehler, encoding="utf-8")
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("BAB-O-BOX", f"Das Programm konnte nicht starten:\n\n{fehler[-1500:]}")
-        except Exception:
-            print(fehler, file=sys.stderr)
+        if test_ziel:
+            test_ziel.write_text("FEHLER\n" + fehler, encoding="utf-8")
+        notfall_meldung(fehler) if not test_ziel else notfall_protokoll(fehler)
 
 
 if __name__ == "__main__":
