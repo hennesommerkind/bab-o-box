@@ -16,9 +16,40 @@ import traceback
 from dataclasses import asdict
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
+
+
+def windows_meldung(text: str) -> None:
+    """Meldung ohne Tk (funktioniert auch, wenn Tk fehlt)."""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, "BAB-O-BOX", 0x10)
+    except Exception:
+        print(text, file=sys.stderr)
+
+
+def vollstaendig_entpackt() -> bool:
+    """Prüft, ob die mitgelieferten Dateien da sind (häufigster Fehler: ZIP nicht fertig entpackt)."""
+    if not getattr(sys, "frozen", False):
+        return True
+    basis = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    fehlend = [n for n in ("_tcl_data", "_tk_data", "config_standard.toml") if not (basis / n).exists()]
+    if fehlend:
+        windows_meldung(
+            "Das Programm ist nicht vollständig entpackt – es fehlen Dateien:\n  " + ", ".join(fehlend)
+            + f"\n\nOrdner: {basis.parent}\n\n"
+            "So geht's: die ZIP-Datei mit Rechtsklick → „Alle extrahieren …“ vollständig entpacken, warten, "
+            "bis Windows fertig ist, und dann BAB-O-BOX.exe im entpackten Ordner starten.\n\n"
+            "Falls es danach wieder passiert, hat vermutlich der Virenschutz Dateien entfernt – dann bitte die IT fragen.")
+        return False
+    return True
+
+
+if not vollstaendig_entpackt():
+    raise SystemExit(1)
+
+import tkinter as tk  # noqa: E402
+from tkinter import filedialog, messagebox, ttk  # noqa: E402
+from tkinter.scrolledtext import ScrolledText  # noqa: E402
 
 
 def notfall_protokoll(fehler: str) -> list[str]:
@@ -46,7 +77,8 @@ def notfall_meldung(fehler: str) -> None:
                              + ("\n\nDetails gespeichert in:\n" + "\n".join(orte) if orte else ""))
         root.destroy()
     except Exception:
-        pass
+        windows_meldung("Das Programm konnte nicht starten.\n\n" + fehler[-1200:]
+                        + ("\n\nDetails gespeichert in:\n" + "\n".join(orte) if orte else ""))
 
 
 try:

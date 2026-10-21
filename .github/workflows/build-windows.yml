@@ -80,5 +80,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Compress-Archive -Path dist\BAB-O-BOX -DestinationPath BAB-O-BOX-Windows.zip
+          # ZIP so packen, dass BAB-O-BOX.exe als LETZTE Datei entpackt wird – sonst kann man sie starten,
+          # bevor Windows mit dem Entpacken fertig ist (dann fehlen z. B. die Tk-Dateien)
+          python -c "import zipfile,pathlib; b=pathlib.Path('dist'); fs=sorted((p for p in (b/'BAB-O-BOX').rglob('*') if p.is_file()), key=lambda p:(p.name=='BAB-O-BOX.exe', str(p))); z=zipfile.ZipFile('BAB-O-BOX-Windows.zip','w',zipfile.ZIP_DEFLATED); [z.write(p, p.relative_to(b).as_posix()) for p in fs]; z.close(); print(len(fs),'Dateien, letzte:', fs[-1])"
           gh release create "v1.0.${{ github.run_number }}" BAB-O-BOX-Windows.zip --target "${{ github.sha }}" --title "BAB-O-BOX 1.0.${{ github.run_number }}" --notes "ZIP herunterladen, entpacken, BAB-O-BOX.exe starten. Kurzanleitung: LIESMICH_ANWENDER.md im Ordner."
