@@ -31,6 +31,13 @@ Tip: if the resident table has a **Geburtsdatum** field, enter its name there. T
 - Notices that say benefits after a certain date are only paid once the last exam day is proven get a note in the Bescheid's "Notiz" field.
 - Files in **Fehler** have a technical problem (e.g. no network). Once it's fixed, move them back into the input folder.
 
+## Pseudonymizing notices (tab "Schwärzen")
+For passing notices on to development without personal data. Requires the local AI (Ollama, see Einstellungen).
+1. Choose a folder with PDF notices and an output folder (not inside the notices folder).
+2. "Pseudonymisieren" – names, customer numbers, day/month of birth, IBAN, private addresses, employers, phone numbers and e-mail addresses are replaced with placeholder values in the same format. On a laptop without a graphics card this takes roughly 2–6 minutes per notice.
+3. Read the text files in `zum_Senden` (warnings are listed in `bericht.txt`) and only then pass them on. File names are neutral (`bescheid_001.txt` …).
+4. `NUR_LOKAL\zuordnung.csv` contains the mapping to the real data – never pass it on, delete it after checking.
+
 ## Data protection
 Text recognition runs entirely on this PC. Documents are only sent to Ninox.
 Settings (including the API key), the log and the processing record are stored under `%APPDATA%\BAB-O-BOX`. The PC should be used by authorized staff only.

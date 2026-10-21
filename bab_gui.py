@@ -83,6 +83,7 @@ def notfall_meldung(fehler: str) -> None:
 
 try:
     import bab_kern as kern
+    import bab_schwaerzen as schwaerzen
 except Exception:
     notfall_meldung(traceback.format_exc())
     raise SystemExit(1)
@@ -201,6 +202,7 @@ class App(tk.Tk):
         self._tab_uebersicht()
         self._tab_pruefen()
         self._tab_analyse()
+        self._tab_schwaerzen()
         self._tab_einstellungen()
 
         self._verarbeitung_neu()
@@ -545,6 +547,102 @@ class App(tk.Tk):
             messagebox.showerror("Fehler", "Technischer Fehler – Details im Protokoll auf der Übersicht.")
 
     # ------------------------------------------------------------------ Analyse
+    # ------------------------------------------------------------------ Schwärzen
+    def _tab_schwaerzen(self):
+        f = ttk.Frame(self.nb, padding=10)
+        self.nb.add(f, text="Schwärzen")
+        ttk.Label(f, text="Bescheide pseudonymisieren – zum Weitergeben an die Entwicklung", style="Gross.TLabel").pack(anchor="w")
+        ttk.Label(f, wraplength=900, style="Hinweis.TLabel", justify="left", text=(
+            "Ersetzt Namen, Kundennummern, Geburtsdaten (Tag/Monat), IBAN, private Anschriften, Betriebe, Telefon und "
+            "E-Mail durch Fantasiewerte im gleichen Format (z. B. „Ahorn, Birke“, „900X000001“). Aufbau, Daten der "
+            "Bescheide, Zeiträume, Beträge und Kolping-Anschriften bleiben erhalten. Alles läuft lokal – die lokale KI "
+            "(Ollama, siehe Einstellungen) ist Pflicht, weil Namen im Fließtext sonst übersehen werden.")).pack(anchor="w", pady=(4, 10))
+
+        r = ttk.Frame(f)
+        r.pack(fill="x")
+        standard_ziel = Path.home() / "Documents" / "BAB" / "Pseudonymisiert"
+        self.var_s_quelle = tk.StringVar(value="")
+        self.var_s_ziel = tk.StringVar(value=str(standard_ziel))
+        for i, (text, var) in enumerate([("Ordner mit Bescheiden (PDF)", self.var_s_quelle), ("Ausgabeordner", self.var_s_ziel)]):
+            ttk.Label(r, text=text).grid(row=i, column=0, sticky="w", pady=3, padx=(0, 8))
+            ttk.Entry(r, textvariable=var, width=70).grid(row=i, column=1, sticky="ew", pady=3)
+            ttk.Button(r, text="…", width=3, command=lambda v=var: self._wahl_ordner(v)).grid(row=i, column=2, padx=4)
+
+        k = ttk.Frame(f)
+        k.pack(fill="x", pady=(10, 4))
+        self.btn_s_start = ttk.Button(k, text="▶ Pseudonymisieren", command=self._schwaerzen_start)
+        self.btn_s_start.pack(side="left")
+        ttk.Button(k, text="Abbrechen", command=lambda: self._s_abbruch.set()).pack(side="left", padx=6)
+        ttk.Button(k, text="📂 Ergebnis öffnen", command=lambda: kern.ordner_oeffnen(
+            Path(self.var_s_ziel.get()) / "zum_Senden") if (Path(self.var_s_ziel.get()) / "zum_Senden").exists()
+            else messagebox.showinfo("Schwärzen", "Noch kein Ergebnis vorhanden.")).pack(side="left")
+        self.lbl_s_status = ttk.Label(k, text="", style="Hinweis.TLabel")
+        self.lbl_s_status.pack(side="left", padx=10)
+
+        self.txt_s_log = ScrolledText(f, height=14, font=("Consolas", 9), state="disabled")
+        self.txt_s_log.pack(fill="both", expand=True, pady=(6, 6))
+        ttk.Label(f, wraplength=900, justify="left", text=(
+            "Danach: Die Textdateien in „zum_Senden“ durchlesen (Warnungen stehen in bericht.txt) und erst dann "
+            "weitergeben. Der Ordner „NUR_LOKAL“ enthält die Zuordnung zu den echten Daten – nie weitergeben, "
+            "nach der Durchsicht löschen.")).pack(anchor="w")
+        self._s_abbruch = threading.Event()
+        self._s_laeuft = False
+
+    def _s_log(self, text: str):
+        self.q.put(("schwaerzen", text))
+
+    def _schwaerzen_start(self):
+        if self._s_laeuft:
+            return
+        quelle, ziel = Path(self.var_s_quelle.get().strip()), Path(self.var_s_ziel.get().strip())
+        if not self.var_s_quelle.get().strip() or not quelle.is_dir():
+            messagebox.showwarning("Schwärzen", "Bitte einen Ordner mit Bescheiden (PDF) auswählen.")
+            return
+        anzahl = len([p for p in quelle.iterdir() if p.suffix.lower() == ".pdf"])
+        if not anzahl:
+            messagebox.showwarning("Schwärzen", "In diesem Ordner liegen keine PDF-Dateien.")
+            return
+        try:
+            if ziel.resolve() == quelle.resolve() or quelle.resolve() in ziel.resolve().parents:
+                messagebox.showwarning("Schwärzen", "Der Ausgabeordner darf nicht im Bescheid-Ordner liegen.")
+                return
+        except OSError:
+            pass
+        cfg = copy.deepcopy(self.k.cfg)
+        fehler = schwaerzen.ki_bereit(cfg)
+        if fehler:
+            messagebox.showerror("Schwärzen – lokale KI nötig", fehler + "\n\nEinrichten unter Einstellungen → Lokale KI.")
+            return
+        if (ziel / "zum_Senden").exists() and any((ziel / "zum_Senden").iterdir()):
+            if not messagebox.askyesno("Schwärzen", "Im Ausgabeordner liegen schon Ergebnisse. Überschreiben?"):
+                return
+        self._s_abbruch.clear()
+        self._s_laeuft = True
+        self.btn_s_start.state(["disabled"])
+        self.txt_s_log.configure(state="normal")
+        self.txt_s_log.delete("1.0", "end")
+        self.txt_s_log.configure(state="disabled")
+        self.lbl_s_status.configure(text=f"läuft … ({anzahl} Dateien, mit KI auf dem Prozessor ca. 2–6 Min. je Bescheid)")
+
+        def lauf():
+            return schwaerzen.stapel(quelle, ziel, cfg, True, self._s_log, self._s_abbruch.is_set)
+
+        def fertig(erg, ex):
+            self._s_laeuft = False
+            self.btn_s_start.state(["!disabled"])
+            if ex:
+                self.lbl_s_status.configure(text="abgebrochen")
+                messagebox.showerror("Schwärzen", str(ex))
+                return
+            ok, warn = erg
+            self.lbl_s_status.configure(text=f"fertig: {ok} Dateien, {warn} mit Warnungen")
+            messagebox.showinfo("Schwärzen", f"{ok} Bescheide pseudonymisiert, {warn} davon mit Warnungen.\n\n"
+                                             "Bitte die Dateien in „zum_Senden“ und bericht.txt durchsehen, bevor du sie "
+                                             "weitergibst.")
+            kern.ordner_oeffnen(ziel / "zum_Senden")
+
+        self._hintergrund(lauf, fertig)
+
     def _tab_analyse(self):
         f = ttk.Frame(self.nb, padding=10)
         self.nb.add(f, text="Analyse")
@@ -597,7 +695,7 @@ class App(tk.Tk):
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
-                        if self.nb.index("current") == 3 else None)
+                        if self.nb.select() == str(aussen) else None)
 
         e = self.k.einstellungen
         self.e_vars: dict[tuple, tk.Variable] = {}
@@ -886,6 +984,11 @@ class App(tk.Tk):
                     cb, erg, fehler = daten
                     if cb:
                         cb(erg, fehler)
+                elif art == "schwaerzen":
+                    self.txt_s_log.configure(state="normal")
+                    self.txt_s_log.insert("end", daten + "\n")
+                    self.txt_s_log.see("end")
+                    self.txt_s_log.configure(state="disabled")
                 elif art == "gestoppt":
                     self.lbl_status.configure(text="Überwachung gestoppt", foreground="")
                     self.btn_start.configure(text="▶ Überwachung starten")

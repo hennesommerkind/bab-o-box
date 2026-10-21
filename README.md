@@ -8,6 +8,7 @@ Windows app with a graphical interface: it watches the scan folder, runs local O
 |---|---|
 | `bab_gui.py` | Interface (tkinter) |
 | `bab_kern.py` | Core logic – also runs on its own on the command line (`python bab_kern.py --einmal`) |
+| `bab_schwaerzen.py` | Pseudonymization of notices (fixed patterns + local AI via Ollama), tab "Schwärzen" |
 | `config_standard.toml` | Default rules (search patterns, categories, Ninox fields) – bundled, updated with every release. Local differences go into `%APPDATA%\BAB-O-BOX\eigene_regeln.toml` |
 | `regeln_alt/` | Earlier default rule files – used once to extract own changes from an old full `config.toml` |
 | `build.bat` | Builds the `.exe` on a Windows PC |
