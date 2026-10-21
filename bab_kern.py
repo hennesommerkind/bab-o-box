@@ -86,7 +86,7 @@ def standard_einstellungen() -> dict:
             "archiv_original": str(basis / "_original"),
         },
         "ninox": {"base_url": "https://api.ninox.com/v1", "api_schluessel": "", "team_id": "", "datenbank_id": ""},
-        "ki": {"aktiv": False, "url": "http://localhost:11434", "modell": "qwen2.5:7b"},
+        "ki": {"aktiv": False, "url": "http://localhost:11434", "modell": "gemma4:e2b"},
         "ocr": {"aktiv": True, "sprache": "deu", "tesseract": ""},
         "ueberwachung": {"intervall_s": 30, "beim_start_starten": False},
         "testlauf": True,
@@ -718,11 +718,23 @@ def ki_ergaenzen(text: str, e: Ergebnis, cfg: dict) -> Ergebnis:
         "Erfinde nichts. Wenn ein Wert nicht eindeutig im Text steht, setze null.\n\n"
         "TEXT:\n" + text[: k.get("max_zeichen", 6000)]
     )
+    # Strukturierte Ausgabe: Ollama erzwingt dieses JSON-Schema (nur lokal, nicht in der Ollama-Cloud)
+    text_oder_null = {"type": ["string", "null"]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "kundennummer": text_oder_null,
+            "kategorie": {"type": ["string", "null"], "enum": kategorien + [None]},
+            "bescheiddatum": text_oder_null, "zeitraum_von": text_oder_null,
+            "zeitraum_bis": text_oder_null, "betrag": text_oder_null,
+        },
+        "required": ["kundennummer", "kategorie", "bescheiddatum", "zeitraum_von", "zeitraum_bis", "betrag"],
+    }
     try:
         r = requests.post(
             k["url"].rstrip("/") + "/api/chat",
             json={"model": k["modell"], "messages": [{"role": "user", "content": prompt}],
-                  "format": "json", "stream": False, "options": {"temperature": 0}},
+                  "format": schema, "stream": False, "options": {"temperature": 0}},
             timeout=k.get("timeout_s", 180),
         )
         r.raise_for_status()
@@ -756,6 +768,8 @@ def ki_testen(cfg: dict) -> str:
     modelle = [m["name"] for m in r.json().get("models", [])]
     wunsch = cfg["ki"]["modell"]
     status = "vorhanden" if wunsch in modelle else "NICHT installiert (ollama pull " + wunsch + ")"
+    if wunsch.endswith(":cloud") or "-cloud" in wunsch:
+        status += "\nACHTUNG: Cloud-Modell – Bescheidtexte würden an Ollama-Server gesendet. Für Sozialdaten nicht verwenden!"
     return f"Ollama erreichbar. Modell {wunsch}: {status}\nInstalliert: {', '.join(modelle) or '–'}"
 
 
