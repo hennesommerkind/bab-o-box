@@ -215,10 +215,19 @@ class Kalender(tk.Toplevel):
         ttk.Button(fuss, text=f"Heute ({self.heute:%d.%m.%Y})", command=lambda: self._waehlen(self.heute)).pack(side="left")
         ttk.Button(fuss, text="Schließen", command=self.destroy).pack(side="right")
         self._zeichnen()
+        self.withdraw()
         self.update_idletasks()
-        x, y = anker.winfo_rootx(), anker.winfo_rooty() + anker.winfo_height()
-        x = min(x, self.winfo_screenwidth() - self.winfo_reqwidth() - 10)
-        self.geometry(f"+{max(0, x - self.winfo_reqwidth() + anker.winfo_width())}+{y}")
+        # immer innerhalb des Programmfensters öffnen – unter dem Knopf, rechtsbündig
+        haupt = anker.winfo_toplevel()
+        b, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        links, oben = haupt.winfo_rootx(), haupt.winfo_rooty()
+        rechts, unten = links + haupt.winfo_width(), oben + haupt.winfo_height()
+        x = anker.winfo_rootx() + anker.winfo_width() - b
+        y = anker.winfo_rooty() + anker.winfo_height() + 4
+        x = max(links + 10, min(x, rechts - b - 10))
+        y = max(oben + 10, min(y, unten - h - 10))
+        self.geometry(f"+{x}+{y}")
+        self.deiconify()
         self.bind("<Escape>", lambda _e: self.destroy())
         self.focus_force()
         try:
@@ -721,7 +730,6 @@ class App(tk.Tk):
         kopf.pack(fill="x")
         ttk.Label(kopf, text="Zu prüfende Dokumente").pack(side="left")
         ttk.Button(kopf, text="Aktualisieren", command=self._pruefen_aktualisieren).pack(side="right")
-        ttk.Button(kopf, text="Alle neu erkennen", command=self._alle_neu_erkennen).pack(side="right", padx=4)
         rahmen = ttk.Frame(oben)
         rahmen.pack(fill="both", expand=True, pady=(6, 0))
         self.tree_p = ttk.Treeview(rahmen, columns=("datei", "grund"), show="headings", height=6)
@@ -777,10 +785,10 @@ class App(tk.Tk):
         self.lbl_kopiert.grid(row=n + 2, column=1, columnspan=2, sticky="w")
         ttk.Button(rechts, text="✔ Freigeben (benennen und ablegen)", command=self._pruefen_freigeben).grid(
             row=n + 3, column=0, columnspan=3, sticky="ew", pady=(12, 2))
-        ttk.Button(rechts, text="Erneut erkennen", command=self._pruefen_erneut).grid(
-            row=n + 4, column=0, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(rechts, text="Freigeben benennt die Datei, kopiert die Beschreibung und zeigt den Zielordner.",
+                  style="Hinweis.TLabel", wraplength=300).grid(row=n + 4, column=0, columnspan=3, sticky="w")
         ttk.Button(rechts, text="PDF im PDF-Programm öffnen", command=self._pruefen_pdf).grid(
-            row=n + 5, column=0, columnspan=3, sticky="ew", pady=2)
+            row=n + 5, column=0, columnspan=3, sticky="ew", pady=(8, 2))
         rechts.columnconfigure(1, weight=1)
 
         # dezent ausklappbar: was die ausführliche (Pro-)Erkennung noch gefunden hat
@@ -846,6 +854,24 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(self.var_beschr.get())
         self.lbl_kopiert.configure(text=f"✔ kopiert: {self.var_beschr.get()}")
+        self.einblenden(f"📋 In der Zwischenablage: {self.var_beschr.get()}")
+
+    def einblenden(self, text: str, ms: int = 5000):
+        """Kleine Einblendung unten rechts im Programmfenster, verschwindet von selbst."""
+        alt = getattr(self, "_einblendung", None)
+        if alt is not None:
+            try:
+                alt.destroy()
+            except tk.TclError:
+                pass
+        rahmen = tk.Frame(self, background="#2b2b2b", padx=14, pady=10)
+        tk.Label(rahmen, text=text, background="#2b2b2b", foreground="white", justify="left",
+                 font=("Segoe UI", 10), wraplength=520).pack()
+        rahmen.place(relx=1.0, rely=1.0, x=-20, y=-20, anchor="se")
+        rahmen.lift()
+        rahmen.bind("<Button-1>", lambda _e: rahmen.destroy())
+        self._einblendung = rahmen
+        self.after(ms, lambda: rahmen.destroy() if rahmen.winfo_exists() else None)
 
     def _alle_neu_erkennen(self):
         faelle = [p for p, _ in (self.v.pruef_faelle() if self.v else [])]
@@ -875,6 +901,8 @@ class App(tk.Tk):
         if w["haus"] and haeuser and w["haus"] not in haeuser:
             if not messagebox.askyesno("Haus", f"„{w['haus']}“ steht nicht in der Häuserliste.\nTrotzdem verwenden?"):
                 return
+        w["_zusatz"] = self.p_zusatz
+        beschreibung = self.var_beschr.get().strip()
         sel = self.tree_p.selection()
         naechstes = (self.tree_p.next(sel[0]) or self.tree_p.prev(sel[0])) if sel else None
         naechste_datei = self.pruef_pfade.get(naechstes) if naechstes else None
@@ -886,6 +914,12 @@ class App(tk.Tk):
                 self.vorschau.laden(pfad)
                 return
             self._pruefen_aktualisieren()
+            if beschreibung:
+                self.clipboard_clear()
+                self.clipboard_append(beschreibung)
+            self.einblenden(f"✔ Freigegeben: {name}" + (f"\n📋 In der Zwischenablage: {beschreibung}" if beschreibung else ""))
+            ziel = self.v.verarbeitet / name
+            threading.Thread(target=lambda: kern.im_explorer_zeigen(ziel), daemon=True).start()
             self.lbl_grund.configure(text=f"✔ Freigegeben als {name}")
             for iid, p in self.pruef_pfade.items():
                 if p == naechste_datei:
@@ -1160,6 +1194,7 @@ class App(tk.Tk):
                         if self.nb.select() == str(aussen) else None)
 
         e = self.k.einstellungen
+        e.setdefault("dateiname", {k: self.k.cfg.get("dateiname", {}).get(k) for k in ("schema", "datumsformat")})
         self.e_vars: dict[tuple, tk.Variable] = {}
 
         def feld(rahmen, zeile, text, pfad, geheim=False, wahl=None, hinweis=None):
@@ -1194,13 +1229,11 @@ class App(tk.Tk):
         feld(r, 4, "Original-Archiv", ("ordner", "archiv_original"), wahl="ordner", hinweis="leer = Originale löschen")
 
         if LIGHT:
-            r = ttk.LabelFrame(f, text="Häuser und Kostensätze (CSV-Export aus Ninox)", padding=8)
+            r = ttk.LabelFrame(f, text="Stammdaten (CSV-Export aus Ninox, einzeln einlesbar)", padding=8)
             r.pack(fill="x", pady=4)
-            ttk.Button(r, text="Stammdaten laden …", command=self._stammdaten_csv).grid(row=0, column=0, sticky="w")
-            ttk.Label(r, text="nacheinander: Häuser (nötig), Kostensätze und Rechtslage (beide optional)",
-                      style="Hinweis.TLabel").grid(row=0, column=1, sticky="w", padx=8)
-            self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700)
-            self.lbl_stamm.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            self._stammdaten_knoepfe(r).grid(row=0, column=0, sticky="w")
+            self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700, justify="left")
+            self.lbl_stamm.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
             r = ttk.LabelFrame(f, text="Beschreibung zum Kopieren (z. B. für das Ninox-Feld „Beschreibung“)", padding=8)
             r.pack(fill="x", pady=4)
@@ -1254,11 +1287,29 @@ class App(tk.Tk):
         knoepfe.grid(row=4, column=1, sticky="w", pady=(6, 0))
         ttk.Button(knoepfe, text="Verbindung testen", command=self._ninox_testen).pack(side="left")
         ttk.Button(knoepfe, text="Stammdaten laden (Häuser, Kostensätze)", command=self._stammdaten_laden).pack(side="left", padx=6)
-        ttk.Button(knoepfe, text="… aus CSV-Export", command=self._stammdaten_csv).pack(side="left", padx=6)
-        self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel")
-        self.lbl_stamm.grid(row=5, column=1, sticky="w")
+        ttk.Label(r, text="ohne API:").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self._stammdaten_knoepfe(r).grid(row=5, column=1, sticky="w", pady=(6, 0))
+        self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700, justify="left")
+        self.lbl_stamm.grid(row=6, column=1, sticky="w")
 
     def _einstellungen_rest(self, f, feld, schalter):
+        r = ttk.LabelFrame(f, text="Dateiname (Benennung beim Ablegen)", padding=8)
+        r.pack(fill="x", pady=4)
+        feld(r, 0, "Muster", ("dateiname", "schema"))
+        ttk.Label(r, text="Platzhalter: {kundennummer} {name} {haus} {art} {art_lang} {datum} {von} {bis}",
+                  style="Hinweis.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(r, text="Datumsformat").grid(row=2, column=0, sticky="w", pady=3)
+        var = tk.StringVar(value=self.k.einstellungen.get("dateiname", {}).get("datumsformat", "JJJJ-MM-TT"))
+        self.e_vars[("dateiname", "datumsformat")] = var
+        cmb = ttk.Combobox(r, textvariable=var, state="readonly", width=14,
+                           values=["JJJJ-MM-TT", "TT.MM.JJJJ", "JJJJMMTT", "JJJJ-MM", "MM-JJ"])
+        cmb.grid(row=2, column=1, sticky="w", pady=3)
+        cmb.bind("<<ComboboxSelected>>", lambda _e: self._dateiname_beispiel())
+        self.e_vars[("dateiname", "schema")].trace_add("write", lambda *_: self._dateiname_beispiel())
+        self.lbl_dateiname = ttk.Label(r, style="Hinweis.TLabel")
+        self.lbl_dateiname.grid(row=3, column=1, sticky="w", pady=(2, 0))
+        self._dateiname_beispiel()
+
         r = ttk.LabelFrame(f, text="Lokale KI (optional, über Ollama)", padding=8)
         r.pack(fill="x", pady=4)
         schalter(r, 0, "KI nutzen, wenn die Regeln nicht alles finden", ("ki", "aktiv"))
@@ -1321,10 +1372,10 @@ class App(tk.Tk):
         st = self.k.cfg.get("_stammdaten") or {}
         if not st:
             return "Häuser: noch nicht geladen" if LIGHT else "Stammdaten: noch nicht geladen"
-        if LIGHT:
-            return (f"Stand {st.get('geladen', '?')}: {len(st.get('haeuser', []))} Häuser, "
-                    f"{len(st.get('kostensaetze', []))} Kostensätze, {len(st.get('rechtslage', []) or [])} Rechtslagen – "
-                    + ", ".join(self._haus_namen()))
+        stand = st.get("stand", {})
+        zeilen = [f"{titel}: {len(st.get(teil) or [])}" + (f" (eingelesen {stand[teil]})" if stand.get(teil) else "")
+                  for teil, titel in kern.STAMMDATEN_TEILE.items()]
+        return " · ".join(zeilen) + (f" · Quelle: {st.get('quelle')}" if st.get("quelle") else "")
         haeuser = ", ".join(h.get("kuerzel") or h.get("name") or "?" for h in st.get("haeuser", [])[:8])
         rl = st.get("rechtslage") or []
         neueste = max(rl, key=lambda r: r["ab"]) if rl else None
@@ -1359,40 +1410,46 @@ class App(tk.Tk):
 
         self._hintergrund(laden, fertig, "Lade Stammdaten …")
 
-    def _stammdaten_csv(self):
-        """Ohne API: Ninox-Export der Häuser- und der Kostensatz-Tabelle (CSV, Semikolon) einlesen."""
-        haus = filedialog.askopenfilename(title="1/3: Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
-        if not haus:
+    def _dateiname_beispiel(self):
+        if not hasattr(self, "lbl_dateiname"):
             return
-        ks = filedialog.askopenfilename(title="2/3: Kostensätze-Export (CSV) wählen" + (" – Abbrechen = überspringen" if LIGHT else ""),
-                                        filetypes=[("CSV", "*.csv")])
-        if not ks and not LIGHT:
+        cfg = copy.deepcopy(self.k.cfg)
+        cfg["dateiname"] = {k[1]: v.get() for k, v in self.e_vars.items() if k[0] == "dateiname"}
+        e = kern.Ergebnis(kundennummer="022P425485", name="Mustermann, Max", haus="Frankfurt", kategorie="Änderung",
+                          bescheiddatum="2025-12-03", zeitraum_von="2026-01-01", zeitraum_bis="2027-06-30")
+        self.lbl_dateiname.configure(text=f"Beispiel: {kern.dateiname_bauen(cfg, e)}")
+
+    def _stammdaten_knoepfe(self, eltern) -> ttk.Frame:
+        rahmen = ttk.Frame(eltern)
+        for teil, titel in kern.STAMMDATEN_TEILE.items():
+            ttk.Button(rahmen, text=f"{titel} laden …", command=lambda t=teil: self._stammdaten_teil(t)).pack(
+                side="left", padx=(0, 6))
+        return rahmen
+
+    def _stammdaten_teil(self, teil: str):
+        titel = kern.STAMMDATEN_TEILE[teil]
+        datei = filedialog.askopenfilename(title=f"{titel}: CSV-Export aus Ninox wählen", filetypes=[("CSV", "*.csv")])
+        if not datei:
             return
-        rl = filedialog.askopenfilename(title="3/3 (optional): Rechtslage-Export (CSV) – Abbrechen = überspringen",
-                                        filetypes=[("CSV", "*.csv")])
         try:
-            daten = kern.stammdaten_aus_csv(Path(haus), Path(ks) if ks else None, self._formular_cfg(), self.k.ordner,
-                                            Path(rl) if rl else None)
+            daten = kern.stammdaten_teil_aus_csv(teil, Path(datei), self._formular_cfg(), self.k.ordner)
         except Exception as fehler:  # noqa: BLE001
-            messagebox.showerror("Stammdaten", f"CSV konnte nicht gelesen werden:\n{fehler}")
+            messagebox.showerror(titel, f"Die Datei konnte nicht gelesen werden:\n{fehler}")
             return
         self.k.laden()
         self._konfiguration_anwenden()
         self.lbl_stamm.configure(text=self._stammdaten_text())
-        ohne_betrag = sum(1 for k in daten["kostensaetze"] if not k.get("betraege"))
-        text = self._stammdaten_text()
-        if LIGHT:
-            offen = len(self.v.pruef_faelle()) if self.v else 0
-            if offen and messagebox.askyesno("Stammdaten", text + f"\n\n{offen} Dokument(e) unter „Prüfen“ wurden "
-                                             "ohne diese Daten erkannt. Jetzt neu erkennen?"):
-                self._alle_neu_erkennen()
-            elif not offen:
-                messagebox.showinfo("Stammdaten", text)
-            return
-        if ohne_betrag:
-            text += (f"\n\n{ohne_betrag} Kostensätze ohne Monatsbetrag/Tagessatz – Häuser werden erkannt, "
-                     "der Abgleich mit dem Bedarf für den Lebensunterhalt geht aber erst mit Beträgen.")
-        messagebox.showinfo("Stammdaten", text)
+        text = f"{len(daten.get(teil) or [])} {titel} eingelesen."
+        if teil == "kostensaetze":
+            ohne = sum(1 for k in daten["kostensaetze"] if k.get("haus_id") is None)
+            if ohne:
+                text += f"\n\n{ohne} Kostensätze ohne passendes Haus – erst die Häuser laden, dann die Kostensätze."
+        offen = len(self.v.pruef_faelle()) if (LIGHT and self.v) else 0
+        if offen and teil != "rechtslage" and messagebox.askyesno(
+                titel, text + f"\n\n{offen} Dokument(e) unter „Prüfen“ wurden ohne diese Daten erkannt. Jetzt neu erkennen?"):
+            self._alle_neu_erkennen()
+        elif not offen:
+            messagebox.showinfo(titel, text)
 
     def _beschreibung_beispiel(self):
         if not hasattr(self, "lbl_beispiel"):
@@ -1403,21 +1460,6 @@ class App(tk.Tk):
              "kundennummer": "022P425485"}, {"zeitraum_von": "2026-01-01", "zeitraum_bis": "2027-06-30",
                                             "betrag": "812,00"}, b, self.k.cfg.get("beschreibung_art", {}))
         self.lbl_beispiel.configure(text=f"Beispiel: {bsp}")
-
-    def _haeuser_csv(self):
-        """Light: nur die Häuser-Tabelle (CSV-Export aus Ninox) – für Haus-Erkennung und Auswahlliste."""
-        haus = filedialog.askopenfilename(title="Häuser-Export (CSV) wählen", filetypes=[("CSV", "*.csv")])
-        if not haus:
-            return
-        try:
-            kern.stammdaten_aus_csv(Path(haus), None, self._formular_cfg(), self.k.ordner)
-        except Exception as fehler:  # noqa: BLE001
-            messagebox.showerror("Häuser", f"CSV konnte nicht gelesen werden:\n{fehler}")
-            return
-        self.k.laden()
-        self._konfiguration_anwenden()
-        self.lbl_stamm.configure(text=self._stammdaten_text())
-        messagebox.showinfo("Häuser", self._stammdaten_text())
 
     def _ninox_testen(self):
         cfg = self._formular_cfg()

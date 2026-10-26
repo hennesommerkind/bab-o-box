@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 11
+version = 12
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -46,14 +46,18 @@ name_sperrworte = ['Kolping', 'Jugendwohnen', 'Agentur', 'Arbeit', 'Bescheid', '
 anschrift_bereich_zeichen = 1500
 
 [dateiname]
-# Platzhalter: {name} {ninox_name} {haus} {kategorie} {datum} {kundennummer} {geburtsdatum} {von} {bis}
+# Platzhalter: {kundennummer} {name} {haus} {art} {art_lang} {datum} {von} {bis}   (Pro zusätzlich {ninox_name} {geburtsdatum})
+#   {art_lang}   = ausgeschriebene Art (siehe [beschreibung_art]), z. B. Änderungsbescheid
+#   Format von {datum}/{von}/{bis}: datumsformat (JJJJ-MM-TT, TT.MM.JJJJ, JJJJMMTT, MM-JJ, JJJJ-MM)
+# Lässt sich in der App unter Einstellungen → Dateiname ändern.
 #   {haus}       = Kürzel des erkannten Hauses (aus den Ninox-Stammdaten)
 #   {name}       = Name wie im Bescheid gelesen ("Nachname_Vorname"); nicht lesbar → Name aus Ninox → "ohne-Name"
 #                  Der Name dient NUR dem Dateinamen – die Zuordnung in Ninox läuft über Kundennummer/Geburtsdatum.
 #   {ninox_name} = Name aus Ninox (name_ausdruck, s. u.)
 #   {datum}      = Bescheiddatum
 # Gleiche Namen bekommen automatisch _2, _3 … angehängt.
-schema = '{kundennummer}_BAB-{kategorie}_{name}.pdf'
+schema = '{kundennummer}_BAB-{art}_{name}.pdf'
+datumsformat = 'JJJJ-MM-TT'
 
 # --------------------------------------------------------------------------- Suchmuster
 # Werden alle angewendet; Gruppe 1 ist der Wert (Tabellenzeile: Gruppen 1–3).

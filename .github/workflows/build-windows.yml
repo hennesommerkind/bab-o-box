@@ -41,17 +41,36 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
-      - name: Tesseract beilegen (Light nur deutsch)
+      - name: Tesseract beilegen (nur Deutsch)
         shell: pwsh
         run: |
           $src = "C:\Program Files\Tesseract-OCR"
-          foreach ($a in @(@("BAB-O-BOX-Pro", @("deu","eng","osd"), "LIESMICH_ANWENDER.md"), @("BAB-O-BOX-Light", @("deu"), "LIESMICH_LIGHT.md"))) {
+          foreach ($a in @(@("BAB-O-BOX-Pro", @("deu"), "LIESMICH_ANWENDER.md"), @("BAB-O-BOX-Light", @("deu"), "LIESMICH_LIGHT.md"))) {
             $dst = "dist\$($a[0])\tesseract"
             robocopy $src $dst /E /XF *.traineddata /XD doc /NFL /NDL /NJH /NJS /NP
             foreach ($l in $a[1]) { if (Test-Path "$src\tessdata\$l.traineddata") { Copy-Item "$src\tessdata\$l.traineddata" "$dst\tessdata\" } }
             Copy-Item $a[2] "dist\$($a[0])\"
           }
           exit 0
+
+      - name: Verschlanken (Sprachdateien, Trainingsprogramme)
+        shell: pwsh
+        run: |
+          pip install pefile
+          python tools/verschlanken.py dist/BAB-O-BOX-Pro dist/BAB-O-BOX-Light
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Texterkennung testen (mitgelieferter Tesseract)
+        shell: pwsh
+        run: |
+          foreach ($n in "BAB-O-BOX-Pro","BAB-O-BOX-Light") {
+            python -c "from PIL import Image, ImageDraw, ImageFont; im=Image.new('L',(1600,400),255); d=ImageDraw.Draw(im); f=ImageFont.truetype('arial.ttf',60); d.text((40,80),'Bescheid über Berufsausbildungsbeihilfe',font=f,fill=0); d.text((40,200),'Kundennummer 123A456789',font=f,fill=0); im.save('ocrtest.png', dpi=(300,300))"
+            & "dist\$n\tesseract\tesseract.exe" ocrtest.png ocraus -l deu -c textonly_pdf=1 pdf txt
+            if ($LASTEXITCODE -ne 0) { Write-Host "Tesseract in $n startet nicht"; exit 1 }
+            $t = Get-Content ocraus.txt -Raw
+            Write-Host "$n erkannt: $t"
+            if ($t -notmatch "123A456789") { exit 1 }
+          }
 
       - name: Selbsttest Pro (Start wie bei einem Update von BAB-Eingang)
         shell: pwsh

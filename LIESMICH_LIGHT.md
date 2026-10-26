@@ -9,14 +9,17 @@ Den Ordner `BAB-O-BOX-Light` auf den PC kopieren und **BAB-O-BOX-Light.exe** sta
 
 ## Einmal einrichten (Reiter „Einstellungen“)
 1. **Ordner**: „Scan-Eingang“ auf den Ordner setzen, in den der Scanner speichert. Die übrigen Ordner werden automatisch angelegt.
-2. **Stammdaten laden …**: nacheinander die CSV-Exporte aus Ninox wählen – Häuser (nötig), Kostensätze und Rechtslage
-   (beide optional, Abbrechen = überspringen). Damit erkennt die App das Haus an der Anschrift bzw. am Kostensatz.
+2. **Stammdaten**: mit **Häuser laden …**, **Kostensätze laden …** und **Rechtslage laden …** jeweils den CSV-Export
+   aus Ninox wählen – einzeln, z. B. nur die Kostensätze, wenn sich etwas geändert hat. Zuerst die Häuser laden.
+   Damit erkennt die App das Haus an der Anschrift bzw. am Kostensatz.
    Ist auf dem PC schon BAB-O-BOX Pro eingerichtet, übernimmt Light deren Stammdaten beim ersten Start automatisch.
 3. **Beschreibung zum Kopieren**: ankreuzen, was im Feld „Beschreibung“ stehen soll (Vorsatz, Art, Bescheiddatum,
    Zeitraum, Haus, Name, Kundennummer, Betrag) und in welchem Datumsformat – z. B. „BAB Änderungsbescheid 12/25“.
-4. **Namen von Mitarbeitenden** (unter „Allgemein“): Nachnamen der Kolleg*innen, an die Abtretungsschreiben gehen.
+4. **Dateiname**: Muster für die Benennung, z. B. `{kundennummer}_BAB-{art}_{name}` oder
+   `{haus}_{datum}_{art_lang}_{name}`, dazu das Datumsformat. Unabhängig von der Beschreibung; ein Beispiel wird angezeigt.
+5. **Namen von Mitarbeitenden** (unter „Allgemein“): Nachnamen der Kolleg*innen, an die Abtretungsschreiben gehen.
    Diese Namen werden nie als Bewohner*in erkannt.
-5. **Speichern**. Bei Bedarf **Mit Windows starten** einschalten.
+6. **Speichern**. Bei Bedarf **Mit Windows starten** einschalten.
 
 ## Im Alltag
 1. Scannen. Die App holt neue PDFs aus dem Eingangsordner (Übersicht → „Überwachung starten“ oder „Jetzt verarbeiten“).
@@ -27,10 +30,14 @@ Den Ordner `BAB-O-BOX-Light` auf den PC kopieren und **BAB-O-BOX-Light.exe** sta
    - **Beschreibung** mit 📋 in die Zwischenablage kopieren und in Ninox einfügen.
    - **▸ Weitere Informationen aus der Erkennung** klappt dezent auf, was die ausführliche Erkennung noch gefunden hat
      (Antragsdatum, Zeiträume, Beträge, Kostensatz, Hinweise) – nur zum Nachsehen.
-   - **Freigeben**: Danach ist das nächste Dokument ausgewählt.
-   - **Alle neu erkennen**: z. B. nachdem die Stammdaten geladen wurden.
-3. Freigegebene Dokumente liegen benannt im Ordner **Verarbeitet**, z. B. `022P425485_BAB-Bewilligung_Mustermann_Max.pdf`.
-   Von dort in Ninox hochladen.
+   - **Freigeben**: Die Datei wird nach dem Muster benannt und in **Verarbeitet** gelegt, die Beschreibung landet in der
+     Zwischenablage (kurze Einblendung unten rechts), und der Ordner **Verarbeitet** öffnet sich mit der markierten Datei –
+     ist er schon offen, wird dieses Fenster nach vorn geholt. Danach ist das nächste Dokument ausgewählt.
+   - Nach dem Laden von Stammdaten bietet die App an, die offenen Dokumente neu zu erkennen.
+3. Die Datei aus dem Explorer in Ninox ziehen und die Beschreibung mit Strg+V einfügen.
+
+Die abgelegten PDFs sind so groß wie der Scan: Die erkannte Schrift wird nur als unsichtbare Textebene hinzugefügt
+(die Datei bleibt durchsuchbar).
 
 Arten: Bewilligung, Änderung (BAföG, TS), Ablehnung, Aufhebung, Anhörung, Mitwirkung, Anforderungsschreiben.
 

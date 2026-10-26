@@ -415,6 +415,50 @@ def ordner_oeffnen(pfad: str | Path) -> None:
         subprocess.Popen(["xdg-open", pfad])
 
 
+_EXPLORER_PS = r"""
+param([string]$ordner, [string]$name)
+$sh = New-Object -ComObject Shell.Application
+foreach ($w in $sh.Windows()) {
+  try { $p = $w.Document.Folder.Self.Path } catch { continue }
+  if ($p -and ($p.TrimEnd('\') -ieq $ordner.TrimEnd('\'))) {
+    try { $w.Document.Folder.Items() | Out-Null; $item = $w.Document.Folder.ParseName($name); if ($item) { $w.Document.SelectItem($item, 29) } } catch {}
+    Write-Output $w.HWND
+    exit 0
+  }
+}
+exit 1
+"""
+
+
+def im_explorer_zeigen(datei: Path) -> None:
+    """Zielordner zeigen und die Datei markieren. Ist der Ordner im Explorer schon offen, wird dieses Fenster
+    nach vorn geholt (statt ein weiteres zu öffnen)."""
+    if os.name != "nt":
+        ordner_oeffnen(datei.parent)
+        return
+    import ctypes
+    hwnd = None
+    try:
+        skript = Path(tempfile.gettempdir()) / "bab_o_box_explorer.ps1"
+        skript.write_text(_EXPLORER_PS, encoding="utf-8-sig")
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                            str(skript), str(datei.parent), datei.name],
+                           capture_output=True, text=True, timeout=20, creationflags=OHNE_FENSTER)
+        zahl = (r.stdout or "").strip().splitlines()
+        hwnd = int(zahl[-1]) if r.returncode == 0 and zahl and zahl[-1].strip().lstrip("-").isdigit() else None
+    except Exception as ex:
+        log.info("Explorer-Fenster nicht gefunden (%s)", ex)
+    if hwnd:
+        u = ctypes.windll.user32
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, 9)  # SW_RESTORE
+        u.keybd_event(0x12, 0, 0, 0)  # Alt kurz drücken: erlaubt SetForegroundWindow
+        u.SetForegroundWindow(hwnd)
+        u.keybd_event(0x12, 0, 2, 0)
+        return
+    subprocess.Popen(["explorer", "/select,", str(datei)])
+
+
 # =========================================================================== OCR (Tesseract direkt)
 
 def tesseract_finden(cfg: dict) -> str:
@@ -483,13 +527,48 @@ def ocr(quelle: Path, ziel: Path, cfg: dict) -> str:
             doc.close()
         liste = tmp / "seiten.txt"
         liste.write_text("\n".join(bilder), encoding="utf-8")
-        befehl = [exe, str(liste), str(tmp / "aus"), "-l", o.get("sprache", "deu"), "--dpi", str(dpi), "pdf", "txt"]
+        nur_text = o.get("ausgabe", "original") == "original"
+        befehl = [exe, str(liste), str(tmp / "aus"), "-l", o.get("sprache", "deu"), "--dpi", str(dpi)]
+        if nur_text:
+            befehl += ["-c", "textonly_pdf=1"]
+        befehl += ["pdf", "txt"]
         r = subprocess.run(befehl, capture_output=True, text=True, timeout=o.get("timeout_s", 300),
                            env=tesseract_umgebung(exe), creationflags=OHNE_FENSTER)
         if r.returncode != 0 or not (tmp / "aus.pdf").exists():
             raise RuntimeError(f"OCR fehlgeschlagen: {r.stderr.strip()[-400:]}")
-        shutil.move(tmp / "aus.pdf", ziel)
+        if nur_text:
+            try:
+                textebene_einfuegen(quelle, tmp / "aus.pdf", ziel)
+            except Exception as ex:  # z. B. beschädigtes PDF -> Bilder-PDF von Tesseract (größer, aber vollständig)
+                log.warning("Textebene konnte nicht ins Original eingefügt werden (%s) – nehme OCR-PDF", ex)
+                r = subprocess.run([a for a in befehl if a not in ("-c", "textonly_pdf=1")], capture_output=True,
+                                   text=True, timeout=o.get("timeout_s", 300), env=tesseract_umgebung(exe),
+                                   creationflags=OHNE_FENSTER)
+                shutil.move(tmp / "aus.pdf", ziel)
+        else:
+            shutil.move(tmp / "aus.pdf", ziel)
         return text_normalisieren((tmp / "aus.txt").read_text(encoding="utf-8", errors="replace"))
+
+
+def textebene_einfuegen(original: Path, nur_text_pdf: Path, ziel: Path) -> None:
+    """Legt die unsichtbare Textebene von Tesseract seitenweise über das Original-PDF.
+    So bleibt das Scan-Bild unverändert (gleiche Dateigröße) und das PDF ist trotzdem durchsuchbar."""
+    from pypdf import PdfWriter, Transformation
+    text = PdfReader(str(nur_text_pdf))
+    w = PdfWriter(clone_from=str(original))
+    if len(text.pages) != len(w.pages):
+        raise ValueError(f"Seitenzahl passt nicht ({len(text.pages)} statt {len(w.pages)})")
+    for seite, tseite in zip(w.pages, text.pages):
+        if seite.rotation:
+            seite.transfer_rotation_to_content()
+        box = seite.cropbox
+        sx = float(box.width) / float(tseite.mediabox.width)
+        sy = float(box.height) / float(tseite.mediabox.height)
+        seite.merge_transformed_page(tseite, Transformation().scale(sx, sy).translate(float(box.left), float(box.bottom)))
+    tmp = ziel.with_name(ziel.stem + "_tmp.pdf")
+    with open(tmp, "wb") as fh:
+        w.write(fh)
+    os.replace(tmp, ziel)
 
 
 # =========================================================================== Regeln
@@ -1059,6 +1138,59 @@ def stammdaten_aus_csv(haus_csv: Path, ks_csv: Path | None, cfg: dict, ordner: P
     return daten
 
 
+def _csv_lesen(p: Path) -> list[dict]:
+    roh = p.read_bytes()
+    text = roh.decode("cp1252", errors="replace")
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            text = roh.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    kopf = text.split("\n", 1)[0]
+    return list(csv.DictReader(text.splitlines(keepends=True), delimiter=";" if kopf.count(";") >= kopf.count(",") else ","))
+
+
+STAMMDATEN_TEILE = {"haeuser": "Häuser", "kostensaetze": "Kostensätze", "rechtslage": "Rechtslage"}
+
+
+def stammdaten_teil_aus_csv(teil: str, pfad: Path, cfg: dict, ordner: Path) -> dict:
+    """Nur einen Teil (Häuser, Kostensätze ODER Rechtslage) aus einem Ninox-CSV-Export ersetzen; der Rest bleibt."""
+    daten = stammdaten_lesen(ordner) or {"haeuser": [], "kostensaetze": []}
+    zeilen = _csv_lesen(pfad)
+    if not zeilen:
+        raise ValueError("Die Datei enthält keine Zeilen.")
+    st = cfg["ninox"].get("stammdaten", {})
+    if teil == "haeuser":
+        for z in zeilen:
+            nr = z.get("Nr") or z.get("Id") or z.get("ID")
+            if nr and str(nr).strip().isdigit():
+                z["id"] = int(nr)
+        neu = stammdaten_aufbereiten(zeilen, [], cfg)["haeuser"]
+        if not neu:
+            raise ValueError(f"Keine Häuser erkannt – erwartet wird u. a. die Spalte „{st.get('haeuser_felder', {}).get('kuerzel')}“.")
+    elif teil == "kostensaetze":
+        hf = st.get("haeuser_felder", {})
+        bekannte = [{"id": h["id"], "fields": {hf.get("name"): h.get("name"), hf.get("kuerzel"): h.get("kuerzel")}}
+                    for h in daten.get("haeuser", [])]
+        neu = stammdaten_aufbereiten(bekannte, zeilen, cfg)["kostensaetze"]
+        if not neu:
+            raise ValueError(f"Keine Kostensätze erkannt – erwartet wird u. a. die Spalte „{st.get('kostensaetze_felder', {}).get('bezeichnung')}“.")
+    elif teil == "rechtslage":
+        neu = stammdaten_aufbereiten([], [], cfg, zeilen).get("rechtslage", [])
+        if not neu:
+            raise ValueError(f"Keine Rechtslage erkannt – erwartet wird u. a. die Spalte „{st.get('rechtslage_felder', {}).get('ab')}“.")
+    else:
+        raise ValueError(teil)
+    daten[teil] = neu
+    jetzt = datetime.now().strftime("%Y-%m-%d %H:%M")
+    daten["geladen"] = jetzt
+    daten.setdefault("stand", {})[teil] = jetzt
+    daten["quelle"] = "CSV"
+    (ordner / "stammdaten.json").write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
+    return daten
+
+
 def stammdaten_lesen(ordner: Path) -> dict:
     p = ordner / "stammdaten.json"
     try:
@@ -1480,7 +1612,8 @@ def _datum_format(iso: str | None, fmt: str) -> str:
     if not iso or len(iso) != 10:
         return iso or ""
     j, m, t = iso.split("-")
-    return {"MM/JJ": f"{m}/{j[2:]}", "MM/JJJJ": f"{m}/{j}", "TT.MM.JJ": f"{t}.{m}.{j[2:]}"}.get(fmt, f"{t}.{m}.{j}")
+    return {"MM/JJ": f"{m}/{j[2:]}", "MM/JJJJ": f"{m}/{j}", "TT.MM.JJ": f"{t}.{m}.{j[2:]}", "JJJJ-MM-TT": iso,
+            "JJJJMMTT": f"{j}{m}{t}", "MM-JJ": f"{m}-{j[2:]}", "JJJJ-MM": f"{j}-{m}"}.get(fmt, f"{t}.{m}.{j}")
 
 
 def beschreibung_bauen(werte: dict, zusatz: dict, b: dict, art_lang: dict) -> str:
@@ -1503,6 +1636,31 @@ def beschreibung_bauen(werte: dict, zusatz: dict, b: dict, art_lang: dict) -> st
     if b.get("betrag") and zusatz.get("betrag"):
         teile.append(f"{zusatz['betrag']} €")
     return " ".join(t.strip() for t in teile if t and t.strip())
+
+
+DATEINAME_PLATZHALTER = ["kundennummer", "name", "haus", "art", "art_lang", "datum", "von", "bis"]
+
+
+def dateiname_bauen(cfg: dict, e: "Ergebnis", ninox_name: str | None = None) -> str:
+    """Dateiname nach dem Muster aus den Einstellungen (cfg["dateiname"]["schema"]); fehlende Angaben -> leer."""
+    d = cfg.get("dateiname", {})
+    fmt = d.get("datumsformat", "JJJJ-MM-TT")
+    art = e.kategorie or ""
+    werte = {
+        "kundennummer": e.kundennummer or "ohne-Kdnr", "name": re.sub(r",\s*", "_", e.name) if e.name else (ninox_name or "ohne-Name"),
+        "ninox_name": ninox_name or "", "haus": e.haus or "ohne-Haus", "kategorie": art, "art": art,
+        "art_lang": cfg.get("beschreibung_art", {}).get(art, art), "datum": _datum_format(e.bescheiddatum, fmt) or "ohne-Datum",
+        "geburtsdatum": e.geburtsdatum or "", "von": _datum_format(e.zeitraum_von, fmt), "bis": _datum_format(e.zeitraum_bis, fmt)}
+
+    class Leer(dict):
+        def __missing__(self, k):
+            return ""
+    try:
+        name = (d.get("schema") or "{kundennummer}_BAB-{art}_{name}").format_map(Leer(werte))
+    except (ValueError, IndexError):
+        name = "{kundennummer}_BAB-{art}_{name}".format_map(Leer(werte))
+    name = re.sub(r"([_\-\s])\1+", r"\1", sicherer_dateiname(name)).strip("_- ")
+    return name if name.lower().endswith(".pdf") else name + ".pdf"
 
 
 def light_grund(e: "Ergebnis") -> str:
@@ -1562,11 +1720,13 @@ class Verarbeitung:
 
     def _datei(self, original: Path, vorgaben: dict | None) -> str:
         # Aus "Prüfen" erneut verarbeiten: erst aus dem Ordner holen, damit nichts doppelt liegt
-        if original.parent.resolve() == self.pruefen.resolve():
+        aus_pruefen = original.parent.resolve() == self.pruefen.resolve()
+        if aus_pruefen:
             grund_pfad(original).unlink(missing_ok=True)
             arbeitskopie = eindeutiger_pfad(self.arbeit / original.name)
             shutil.move(original, arbeitskopie)
             original = arbeitskopie
+        self._erneut = aus_pruefen  # Original liegt dann schon im Archiv
 
         log.info("Verarbeite %s", original.name)
         ocr_pdf = eindeutiger_pfad(self.arbeit / f"{original.stem}_ocr.pdf")
@@ -1616,13 +1776,7 @@ class Verarbeitung:
                     log.info("Kundennummer %s über Geburtsdatum aus Ninox übernommen", e.kundennummer)
                 bewohner_id, ninox_name = t["id"], t["name"]
 
-            dateiname = sicherer_dateiname(self.cfg["dateiname"]["schema"].format(
-                name=re.sub(r",\s*", "_", e.name) if e.name else (ninox_name or "ohne-Name"),
-                ninox_name=ninox_name or "ohne-Ninox", haus=e.haus or "ohne-Haus", kategorie=e.kategorie, datum=e.bescheiddatum or "ohne-Datum",
-                kundennummer=e.kundennummer or "ohne-Kdnr", geburtsdatum=e.geburtsdatum or "ohne-Geburtsdatum",
-                von=e.zeitraum_von or "", bis=e.zeitraum_bis or ""))
-            if not dateiname.lower().endswith(".pdf"):
-                dateiname += ".pdf"
+            dateiname = dateiname_bauen(self.cfg, e, ninox_name)
 
             plan = ablage_plan(self.cfg, e, dateiname)
             if plan["aktion"] != "anlegen":
@@ -1672,11 +1826,9 @@ class Verarbeitung:
             if fehlend:
                 raise ValueError("Bitte noch ausfüllen: " + ", ".join(fehlend))
             e = Ergebnis(**{f: werte[f].strip() for f in FELDER_LIGHT}, quelle="manuell")
-            dateiname = sicherer_dateiname(self.cfg["dateiname"]["schema"].format(
-                name=re.sub(r",\s*", "_", e.name), ninox_name=e.name, haus=e.haus, kategorie=e.kategorie,
-                datum=e.bescheiddatum, kundennummer=e.kundennummer, geburtsdatum="", von="", bis=""))
-            if not dateiname.lower().endswith(".pdf"):
-                dateiname += ".pdf"
+            zusatz = werte.get("_zusatz") or {}
+            e.zeitraum_von, e.zeitraum_bis = zusatz.get("zeitraum_von"), zusatz.get("zeitraum_bis")
+            dateiname = dateiname_bauen(self.cfg, e)
             ziel = eindeutiger_pfad(self.verarbeitet / dateiname)
             shutil.move(pfad, ziel)
             grund_pfad(pfad).unlink(missing_ok=True)
@@ -1687,7 +1839,7 @@ class Verarbeitung:
     def _original_wegraeumen(self, original: Path) -> None:
         if not original.exists():
             return
-        if self.archiv:
+        if self.archiv and not getattr(self, "_erneut", False):
             shutil.move(original, eindeutiger_pfad(self.archiv / original.name))
         else:
             original.unlink()

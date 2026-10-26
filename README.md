@@ -9,7 +9,7 @@ Windows-Programm mit Oberfläche in zwei Ausgaben:
 | Prüfen-Reiter | Liste + Korrekturformular | Liste oben, PDF-Vorschau unten, Formular rechts, Freigabe erst nach Häkchen „verglichen“ |
 | Ninox-Anbindung | ja (API) | nein |
 | Weitere Reiter | Analyse, Schwärzen | – |
-| Texterkennung | Tesseract (deutsch + englisch) | Tesseract nur deutsch |
+| Texterkennung | Tesseract, nur deutsch | Tesseract, nur deutsch |
 | Datenordner | `%APPDATA%\BAB-O-BOX` | `%APPDATA%\BAB-O-BOX Light` |
 
 Beide laufen auch nebeneinander auf einem PC.
@@ -22,6 +22,7 @@ Beide laufen auch nebeneinander auf einem PC.
 | `bab_light.py` | Startpunkt Light (setzt die Ausgabe, startet dieselbe Oberfläche) |
 | `bab_edition.py` | merkt sich, welche Ausgabe läuft |
 | `bab_kern.py` | Erkennung, Regeln, Ninox, Verarbeitung – läuft auch allein (`python bab_kern.py --einmal`) |
+| `tools/verschlanken.py` | entfernt beim Bauen unnötige Sprach-, Zeitzonen- und Trainingsdateien |
 | `bab_schwaerzen.py` | Pseudonymisieren (nur Pro, Reiter „Schwärzen“) |
 | `config_standard.toml` | Standardregeln (Suchmuster, Arten, Ninox-Felder) – kommen mit jedem Update. Eigene Abweichungen in `eigene_regeln.toml` im Datenordner |
 | `regeln_alt/` | frühere Standardregeln – zum einmaligen Übernehmen eigener Änderungen aus einer alten `config.toml` |
