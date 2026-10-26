@@ -41,6 +41,14 @@ Die abgelegten PDFs sind so groß wie der Scan: Die erkannte Schrift wird nur al
 
 Arten: Bewilligung, Änderung (BAföG, TS), Ablehnung, Aufhebung, Anhörung, Mitwirkung, Anforderungsschreiben.
 
+## Nur ein Rechner gleichzeitig (Sperre)
+Beim Start der Überwachung (oder „Jetzt verarbeiten“) legt das Programm im Scan-Ordner die Datei `BAB-O-BOX.lock` an –
+mit Computername, Benutzer*in und Uhrzeit. Beim Stoppen und beim Beenden wird sie wieder gelöscht.
+Versucht ein zweiter Rechner zu starten, erscheint „Der Scan-Ordner wird gerade bearbeitet von …“. Die Sperre lässt sich
+nach einer Sicherheitsabfrage übernehmen – nur tun, wenn dort sicher nicht mehr gearbeitet wird (z. B. nach einem
+Absturz). Der andere Rechner stoppt dann beim nächsten Durchlauf und bekommt einen Hinweis. Eine Sperre vom eigenen
+Rechner, dessen Programm nicht mehr läuft, wird automatisch übernommen.
+
 ## Datenschutz
 Texterkennung (nur Deutsch) und Auswertung laufen vollständig auf diesem PC; es wird nichts ins Internet gesendet.
 Einstellungen und Verarbeitungsliste liegen unter `%APPDATA%\BAB-O-BOX Light`.

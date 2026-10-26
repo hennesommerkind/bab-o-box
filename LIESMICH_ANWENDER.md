@@ -46,6 +46,14 @@ Zum Weitergeben an die Entwicklung ohne personenbezogene Daten. Braucht die loka
 3. Die Textdateien in `zum_Senden` lesen (Warnungen stehen in `bericht.txt`) und erst dann weitergeben.
 4. `NUR_LOKAL\zuordnung.csv` enthält die Zuordnung zu den echten Daten – nie weitergeben, nach der Kontrolle löschen.
 
+## Nur ein Rechner gleichzeitig (Sperre)
+Beim Start der Überwachung (oder „Jetzt verarbeiten“) legt das Programm im Scan-Ordner die Datei `BAB-O-BOX.lock` an –
+mit Computername, Benutzer*in und Uhrzeit. Beim Stoppen und beim Beenden wird sie wieder gelöscht.
+Versucht ein zweiter Rechner zu starten, erscheint „Der Scan-Ordner wird gerade bearbeitet von …“. Die Sperre lässt sich
+nach einer Sicherheitsabfrage übernehmen – nur tun, wenn dort sicher nicht mehr gearbeitet wird (z. B. nach einem
+Absturz). Der andere Rechner stoppt dann beim nächsten Durchlauf und bekommt einen Hinweis. Eine Sperre vom eigenen
+Rechner, dessen Programm nicht mehr läuft, wird automatisch übernommen.
+
 ## Datenschutz
 Die Texterkennung läuft vollständig auf diesem PC. Dokumente gehen nur an Ninox.
 Einstellungen (inkl. API-Schlüssel), Protokoll und Verarbeitungsliste liegen unter `%APPDATA%\BAB-O-BOX`.

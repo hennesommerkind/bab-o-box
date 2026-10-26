@@ -420,6 +420,7 @@ class App(tk.Tk):
         kern.logging_einrichten(self.k.cfg, [handler])
 
         self.v: kern.Verarbeitung | None = None
+        self.sperre: kern.Sperre | None = None
         self.stopp = threading.Event()
         self.waechter: threading.Thread | None = None
         self.nach_stopp = None
@@ -1508,12 +1509,17 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ Verarbeitung & Überwachung
     def _verarbeitung_neu(self):
+        if self.sperre and not self._laeuft():
+            self.sperre.freigeben()
         try:
             self.v = kern.Verarbeitung(self.k.cfg, testlauf=LIGHT or self.var_test.get(),
                                        melden=lambda z: self.q.put(("eintrag", z)))
         except Exception as ex:
             self.v = None
             messagebox.showerror("Einstellungen", f"Die Ordner konnten nicht angelegt werden:\n{ex}\n\nBitte unter „Einstellungen“ prüfen.")
+        if self.v:
+            self.sperre = kern.Sperre(self.v.eingang)
+        self._status_gestoppt()
         self._zaehler_anzeigen()
         self._pruefen_aktualisieren()
 
@@ -1535,17 +1541,59 @@ class App(tk.Tk):
     def _start_stopp(self):
         self.stop() if self._laeuft() else self.start()
 
+    def _status_gestoppt(self, erzwingen: bool = False):
+        if not hasattr(self, "lbl_status") or (self._laeuft() and not erzwingen):
+            return
+        info = self.sperre.lesen() if self.sperre else None
+        if info and not (self.sperre and self.sperre.ist_meine()):
+            wer = f"{info.get('benutzer', '?')} auf {info.get('computer', '?')}"
+            self.lbl_status.configure(text=f"Überwachung gestoppt – Scan-Ordner gesperrt durch {wer}", foreground="#b25e00")
+        else:
+            self.lbl_status.configure(text="Überwachung gestoppt", foreground="")
+
+    def _sperre_holen(self) -> bool:
+        """Lock-Datei im Scan-Ordner setzen. Gehört sie jemand anderem: Hinweis und Sicherheitsabfrage."""
+        if not self.sperre:
+            return False
+        try:
+            info = self.sperre.holen()
+        except Exception as ex:
+            messagebox.showerror("Scan-Ordner", f"Die Sperrdatei im Scan-Ordner konnte nicht angelegt werden:\n{ex}")
+            return False
+        if info is None:
+            return True
+        if not messagebox.askyesno(
+                "Scan-Ordner gesperrt",
+                "Der Scan-Ordner wird gerade bearbeitet von\n\n" + kern.Sperre.beschreiben(info) + "\n\n"
+                "Bitte nicht gleichzeitig arbeiten – sonst werden Dokumente doppelt oder gar nicht verarbeitet.\n\n"
+                "Nur übernehmen, wenn sicher ist, dass dort nicht mehr gearbeitet wird (z. B. nach einem Absturz "
+                "oder wenn der Rechner aus ist).\n\nSperre trotzdem übernehmen?", icon="warning", default="no"):
+            self._status_gestoppt()
+            return False
+        info = self.sperre.holen(erzwingen=True)
+        if info is not None:
+            messagebox.showerror("Scan-Ordner", "Die Sperre wurde gleichzeitig von "
+                                 f"{info.get('benutzer', '?')} auf {info.get('computer', '?')} gesetzt.")
+            return False
+        log.warning("Sperre des Scan-Ordners nach Sicherheitsabfrage übernommen")
+        return True
+
     def start(self):
         if not self.v:
             messagebox.showerror("Start", "Bitte zuerst die Einstellungen prüfen.")
             return
         if self._laeuft():
             return
+        if not self._sperre_holen():
+            return
         self.stopp.clear()
-        v, intervall = self.v, self.k.cfg["ueberwachung"].get("intervall_s", 30)
+        v, intervall, sperre = self.v, self.k.cfg["ueberwachung"].get("intervall_s", 30), self.sperre
 
         def wache():
             while not self.stopp.is_set():
+                if not sperre.auffrischen():
+                    self.q.put(("sperre_verloren", sperre.lesen()))
+                    break
                 try:
                     v.durchlauf()
                 except Exception:
@@ -1564,9 +1612,19 @@ class App(tk.Tk):
         self.lbl_status.configure(text="Wird beendet …", foreground="")
 
     def _jetzt(self):
-        if self.v:
-            self._hintergrund(self.v.durchlauf, lambda n, f: log.info("%s Datei(en) verarbeitet", n) if not f else None,
-                              "Verarbeite …")
+        if not self.v:
+            return
+        eigene = not self._laeuft()
+        if eigene and not self._sperre_holen():
+            return
+
+        def fertig(n, f):
+            if eigene and not self._laeuft():
+                self.sperre.freigeben()
+            if not f:
+                log.info("%s Datei(en) verarbeitet", n)
+
+        self._hintergrund(self.v.durchlauf, fertig, "Verarbeite …")
 
     def _hintergrund(self, fn, fertig=None, status: str | None = None):
         if status:
@@ -1606,8 +1664,15 @@ class App(tk.Tk):
                     self.txt_s_log.insert("end", daten + "\n")
                     self.txt_s_log.see("end")
                     self.txt_s_log.configure(state="disabled")
+                elif art == "sperre_verloren":
+                    info = daten or {}
+                    messagebox.showwarning("Scan-Ordner", "Die Überwachung wurde gestoppt: Die Sperre des Scan-Ordners "
+                                           f"hat jetzt {info.get('benutzer', 'jemand anderes')} auf "
+                                           f"{info.get('computer', 'einem anderen Rechner')} übernommen.")
                 elif art == "gestoppt":
-                    self.lbl_status.configure(text="Überwachung gestoppt", foreground="")
+                    if self.sperre:
+                        self.sperre.freigeben()
+                    self._status_gestoppt(erzwingen=True)
                     self.btn_start.configure(text="▶ Überwachung starten")
                     log.info("Überwachung gestoppt")
                     if self.nach_stopp:
@@ -1622,6 +1687,8 @@ class App(tk.Tk):
                 "Beenden", "Die Überwachung läuft noch.\nWirklich beenden? Neue Scans werden dann nicht mehr verarbeitet."):
             return
         self.stopp.set()
+        if self.sperre:
+            self.sperre.freigeben()
         self.destroy()
 
 

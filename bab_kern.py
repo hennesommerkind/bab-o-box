@@ -1673,6 +1673,112 @@ def light_grund(e: "Ergebnis") -> str:
     return "; ".join(teile)
 
 
+class Sperre:
+    """Lock-Datei im Scan-Ordner: Es soll immer nur EIN Rechner den Ordner verarbeiten.
+    Inhalt: Computer, Benutzer*in, Programm, seit, zuletzt aktiv. Gelöscht beim Stoppen bzw. Beenden."""
+    NAME = "BAB-O-BOX.lock"
+
+    def __init__(self, ordner: Path):
+        import socket
+        import uuid
+        self.datei = Path(ordner) / self.NAME
+        self.ich = {"computer": os.environ.get("COMPUTERNAME") or socket.gethostname(),
+                    "benutzer": os.environ.get("USERNAME") or os.environ.get("USER") or "?",
+                    "programm": ANZEIGE_NAME, "pid": os.getpid(), "kennung": uuid.uuid4().hex}
+
+    def lesen(self) -> dict | None:
+        try:
+            return json.loads(self.datei.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return {"computer": "?", "benutzer": "?", "seit": "?", "unlesbar": True}
+
+    def ist_meine(self) -> bool:
+        info = self.lesen()
+        return bool(info and info.get("kennung") == self.ich["kennung"])
+
+    def verwaist(self, info: dict) -> bool:
+        """Sperre vom selben Rechner, aber das Programm läuft dort nicht mehr (z. B. nach Absturz)."""
+        if info.get("computer") != self.ich["computer"] or not info.get("pid"):
+            return False
+        return not _prozess_laeuft(int(info["pid"]))
+
+    def holen(self, erzwingen: bool = False) -> dict | None:
+        """Sperre setzen. Gibt None zurück, wenn es geklappt hat – sonst die Angaben der fremden Sperre."""
+        info = self.lesen()
+        if info and info.get("kennung") != self.ich["kennung"] and not erzwingen and not self.verwaist(info):
+            return info
+        jetzt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        daten = {**self.ich, "seit": jetzt, "zuletzt": jetzt}
+        if info and info.get("kennung") != self.ich["kennung"]:
+            daten["uebernommen_von"] = f"{info.get('benutzer', '?')} auf {info.get('computer', '?')}"
+            log.warning("Sperre übernommen (vorher %s)", daten["uebernommen_von"])
+        self.datei.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.datei.with_name(self.NAME + f".{self.ich['kennung'][:8]}.tmp")
+        tmp.write_text(json.dumps(daten, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.datei)
+        if not self.ist_meine():  # gleichzeitig hat jemand anderes geschrieben
+            return self.lesen()
+        return None
+
+    def auffrischen(self) -> bool:
+        """'zuletzt aktiv' aktualisieren. False, wenn die Sperre inzwischen jemand anderem gehört."""
+        info = self.lesen()
+        if not info or info.get("kennung") != self.ich["kennung"]:
+            return False
+        info["zuletzt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            tmp = self.datei.with_name(self.NAME + f".{self.ich['kennung'][:8]}.tmp")
+            tmp.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, self.datei)
+        except Exception:
+            pass
+        return True
+
+    def freigeben(self) -> None:
+        if self.ist_meine():
+            try:
+                self.datei.unlink()
+            except Exception as ex:
+                log.warning("Sperre konnte nicht gelöscht werden: %s", ex)
+
+    @staticmethod
+    def beschreiben(info: dict) -> str:
+        if info.get("unlesbar"):
+            return "einer unbekannten Person (Sperrdatei nicht lesbar)"
+        t = f"{info.get('benutzer', '?')} auf dem Computer {info.get('computer', '?')}"
+        if info.get("seit"):
+            t += f"\nseit {iso_zeit_de(info['seit'])}"
+        if info.get("zuletzt") and info.get("zuletzt") != info.get("seit"):
+            t += f", zuletzt aktiv {iso_zeit_de(info['zuletzt'])}"
+        return t
+
+
+def iso_zeit_de(t: str) -> str:
+    try:
+        return datetime.strptime(t, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        return str(t)
+
+
+def _prozess_laeuft(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 class Verarbeitung:
     """Eine Instanz pro Konfiguration. Thread-sicher: es läuft immer nur ein Dokument gleichzeitig."""
 
