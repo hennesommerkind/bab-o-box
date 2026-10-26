@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           foreach ($a in @(@("BAB-O-BOX-Pro","bab_gui.py"), @("BAB-O-BOX-Light","bab_light.py"))) {
-            pyinstaller --noconfirm --clean --windowed --name $a[0] --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt" --collect-all pypdfium2 --collect-all pypdfium2_raw $a[1]
+            pyinstaller --noconfirm --clean --windowed --name $a[0] --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt" --collect-all pypdfium2 --collect-all pypdfium2_raw --collect-all tkinterdnd2 $a[1]
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
@@ -111,6 +111,7 @@ jobs:
           }
           if (-not ((Test-Path $ergebnis) -and ((Get-Content $ergebnis -First 1) -eq "OK"))) { exit 1 }
           if (-not (Select-String -Path $ergebnis -Pattern "Vorschau: Seite 1 von 2" -Quiet)) { exit 1 }
+          if (-not (Select-String -Path $ergebnis -Pattern "Ziehen: ja" -Quiet)) { Write-Host "Drag & Drop (tkdnd) fehlt"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1942,6 +1942,28 @@ class Verarbeitung:
             log.info("Freigegeben: %s", ziel.name)
             return ziel.name
 
+    def loeschen(self, pfade: list[Path]) -> list[str]:
+        """Dokumente aus „Prüfen“ endgültig löschen (nach Warnung in der Oberfläche). Gibt Fehlermeldungen zurück."""
+        fehler = []
+        with self.sperre:
+            for p in pfade:
+                info = {}
+                try:
+                    if grund_pfad(p).exists():
+                        info = json.loads(grund_pfad(p).read_text(encoding="utf-8")).get("erkannt", {})
+                except Exception:
+                    pass
+                try:
+                    p.unlink()
+                    grund_pfad(p).unlink(missing_ok=True)
+                except Exception as ex:
+                    fehler.append(f"{p.name}: {ex}")
+                    continue
+                e = Ergebnis(**{k: v for k, v in info.items() if k in FELDER_LIGHT and v})
+                self._protokoll(p.name, p.name, "geloescht", "von Hand gelöscht", e)
+                log.warning("Gelöscht: %s", p.name)
+        return fehler
+
     def _original_wegraeumen(self, original: Path) -> None:
         if not original.exists():
             return

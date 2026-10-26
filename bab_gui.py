@@ -95,7 +95,7 @@ except Exception:
 log = logging.getLogger("bab")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 LIGHT = kern.LIGHT
-STATUS_TEXT = {"ok": "freigegeben" if LIGHT else "abgelegt", "pruefen": "prüfen", "fehler": "Fehler"}
+STATUS_TEXT = {"ok": "freigegeben" if LIGHT else "abgelegt", "pruefen": "prüfen", "fehler": "Fehler", "geloescht": "gelöscht"}
 
 
 # =========================================================================== kleine Helfer
@@ -413,6 +413,13 @@ class App(tk.Tk):
         self.minsize(860, 580)
 
         autostart_umziehen()
+        self.dnd = False
+        try:  # Ziehen von Text/Dateien in andere Programme (z. B. Ninox) – ohne tkdnd geht es auch, nur ohne Ziehen
+            from tkinterdnd2 import TkinterDnD
+            TkinterDnD._require(self)
+            self.dnd = True
+        except Exception as ex:
+            logging.getLogger("bab").info("Drag & Drop nicht verfügbar: %s", ex)
         self.q: queue.Queue = queue.Queue()
         self.k = kern.Konfiguration()
         handler = QueueHandler(self.q)
@@ -463,24 +470,7 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb, padding=10)
         self.nb.add(f, text="Übersicht")
 
-        oben = ttk.Frame(f)
-        oben.pack(fill="x")
-        self.lbl_status = ttk.Label(oben, text="Überwachung gestoppt", style="Gross.TLabel")
-        self.lbl_status.pack(side="left")
-        self.btn_start = ttk.Button(oben, text="▶ Überwachung starten", command=self._start_stopp)
-        self.btn_start.pack(side="right")
-        ttk.Button(oben, text="Jetzt verarbeiten", command=self._jetzt).pack(side="right", padx=6)
-
-        zeile = ttk.Frame(f)
-        zeile.pack(fill="x", pady=(8, 4))
-        if LIGHT:
-            ttk.Label(zeile, text="Jedes Dokument wird unter „Prüfen“ von Hand kontrolliert und freigegeben.",
-                      style="Hinweis.TLabel").pack(side="left")
-        else:
-            ttk.Checkbutton(zeile, text="Testlauf – nichts an Ninox senden", variable=self.var_test,
-                            command=self._testlauf_umgeschaltet).pack(side="left")
-        for name, key in [("Fehler", "fehler"), ("Prüfen", "pruefen"), ("Verarbeitet", "verarbeitet"), ("Eingang", "eingang")]:
-            ttk.Button(zeile, text=f"📂 {name}", command=lambda k=key: self._ordner(k)).pack(side="right", padx=2)
+        self._kopfzeile(f)
 
         self.lbl_zaehler = ttk.Label(f, text="", style="Hinweis.TLabel")
         self.lbl_zaehler.pack(anchor="w", pady=(0, 6))
@@ -510,6 +500,7 @@ class App(tk.Tk):
         self.tree.tag_configure("ok", foreground="#1b7a2f")
         self.tree.tag_configure("pruefen", foreground="#b25e00")
         self.tree.tag_configure("fehler", foreground="#b00020")
+        self.tree.tag_configure("geloescht", foreground="#888888")
         self.tree.bind("<Double-1>", self._eintrag_oeffnen)
         self.tree.bind("<<TreeviewSelect>>", self._details_zeigen)
         self.tree.bind("<Delete>", lambda _e: self._auswahl_entfernen())
@@ -529,6 +520,40 @@ class App(tk.Tk):
         ttk.Label(f, text="Protokoll").pack(anchor="w", pady=(8, 2))
         self.txt_log = ScrolledText(f, height=6, font=("Consolas", 9), state="disabled")
         self.txt_log.pack(fill="x")
+
+    def _kopfzeile(self, f, mit_hinweis: bool = True):
+        """Status, Start/Stopp, Jetzt verarbeiten und Ordner-Knöpfe – auf Übersicht und Prüfen gleich."""
+        if not hasattr(self, "status_labels"):
+            self.status_labels, self.start_knoepfe = [], []
+        oben = ttk.Frame(f)
+        oben.pack(fill="x")
+        lbl = ttk.Label(oben, text="Überwachung gestoppt", style="Gross.TLabel")
+        lbl.pack(side="left")
+        knopf = ttk.Button(oben, text="▶ Überwachung starten", command=self._start_stopp)
+        knopf.pack(side="right")
+        ttk.Button(oben, text="Jetzt verarbeiten", command=self._jetzt).pack(side="right", padx=6)
+        self.status_labels.append(lbl)
+        self.start_knoepfe.append(knopf)
+        self.lbl_status = self.status_labels[0]
+
+        zeile = ttk.Frame(f)
+        zeile.pack(fill="x", pady=(8, 4))
+        if mit_hinweis and LIGHT:
+            ttk.Label(zeile, text="Jedes Dokument wird unter „Prüfen“ von Hand kontrolliert und freigegeben.",
+                      style="Hinweis.TLabel").pack(side="left")
+        elif mit_hinweis:
+            ttk.Checkbutton(zeile, text="Testlauf – nichts an Ninox senden", variable=self.var_test,
+                            command=self._testlauf_umgeschaltet).pack(side="left")
+        for name, key in [("Fehler", "fehler"), ("Prüfen", "pruefen"), ("Verarbeitet", "verarbeitet"), ("Eingang", "eingang")]:
+            ttk.Button(zeile, text=f"📂 {name}", command=lambda k=key: self._ordner(k)).pack(side="right", padx=2)
+
+    def _status(self, text: str, farbe: str = ""):
+        for lbl in getattr(self, "status_labels", []):
+            lbl.configure(text=text, foreground=farbe)
+
+    def _startknopf(self, text: str):
+        for k in getattr(self, "start_knoepfe", []):
+            k.configure(text=text)
 
     def _eintrag_einfuegen(self, z: dict, oben: bool = True):
         iid = self.tree.insert("", 0 if oben else "end", values=(
@@ -668,6 +693,7 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb, padding=10)
         self.nb.add(f, text="Prüfen")
         self.tab_pruefen = f
+        self._kopfzeile(f, mit_hinweis=False)
 
         links = ttk.Frame(f)
         links.pack(side="left", fill="both", expand=True)
@@ -675,6 +701,7 @@ class App(tk.Tk):
         kopf.pack(fill="x")
         ttk.Label(kopf, text="Dokumente, die nicht eindeutig erkannt wurden").pack(side="left")
         ttk.Button(kopf, text="Aktualisieren", command=self._pruefen_aktualisieren).pack(side="right")
+        ttk.Button(kopf, text="🗑 Löschen …", command=self._pruefen_loeschen).pack(side="right", padx=4)
         self.tree_p = ttk.Treeview(links, columns=("datei", "grund"), show="headings")
         self.tree_p.heading("datei", text="Datei")
         self.tree_p.heading("grund", text="Grund")
@@ -683,6 +710,7 @@ class App(tk.Tk):
         self.tree_p.pack(fill="both", expand=True, pady=(6, 0))
         self.tree_p.bind("<<TreeviewSelect>>", self._pruefen_auswahl)
         self.tree_p.bind("<Double-1>", lambda _e: self._pruefen_pdf())
+        self.tree_p.bind("<Delete>", lambda _e: self._pruefen_loeschen())
 
         rechts = ttk.LabelFrame(f, text="Angaben korrigieren", padding=10)
         rechts.pack(side="right", fill="y", padx=(10, 0))
@@ -722,6 +750,7 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb, padding=10)
         self.nb.add(f, text="Prüfen")
         self.tab_pruefen = f
+        self._kopfzeile(f, mit_hinweis=False)
         aussen = ttk.PanedWindow(f, orient="horizontal")
         aussen.pack(fill="both", expand=True)
 
@@ -731,6 +760,7 @@ class App(tk.Tk):
         kopf.pack(fill="x")
         ttk.Label(kopf, text="Zu prüfende Dokumente").pack(side="left")
         ttk.Button(kopf, text="Aktualisieren", command=self._pruefen_aktualisieren).pack(side="right")
+        ttk.Button(kopf, text="🗑 Löschen …", command=self._pruefen_loeschen).pack(side="right", padx=4)
         rahmen = ttk.Frame(oben)
         rahmen.pack(fill="both", expand=True, pady=(6, 0))
         self.tree_p = ttk.Treeview(rahmen, columns=("datei", "grund"), show="headings", height=6)
@@ -745,6 +775,7 @@ class App(tk.Tk):
         self.tree_p.tag_configure("fehlt", foreground="#b25e00")
         self.tree_p.bind("<<TreeviewSelect>>", self._pruefen_auswahl)
         self.tree_p.bind("<Double-1>", lambda _e: self._pruefen_pdf())
+        self.tree_p.bind("<Delete>", lambda _e: self._pruefen_loeschen())
         links.add(oben, weight=1)
         self.vorschau = PdfVorschau(links)
         links.add(self.vorschau, weight=3)
@@ -786,11 +817,32 @@ class App(tk.Tk):
         self.lbl_kopiert.grid(row=n + 2, column=1, columnspan=2, sticky="w")
         ttk.Button(rechts, text="✔ Freigeben (benennen und ablegen)", command=self._pruefen_freigeben).grid(
             row=n + 3, column=0, columnspan=3, sticky="ew", pady=(12, 2))
-        ttk.Label(rechts, text="Freigeben benennt die Datei, kopiert die Beschreibung und zeigt den Zielordner.",
+        ttk.Label(rechts, text="Freigeben benennt die Datei, kopiert die Kundennummer und zeigt den Zielordner.",
                   style="Hinweis.TLabel", wraplength=300).grid(row=n + 4, column=0, columnspan=3, sticky="w")
         ttk.Button(rechts, text="PDF im PDF-Programm öffnen", command=self._pruefen_pdf).grid(
             row=n + 5, column=0, columnspan=3, sticky="ew", pady=(8, 2))
         rechts.columnconfigure(1, weight=1)
+
+        # nach dem Freigeben: Schritte für Ninox – Kundennummer (schon kopiert), Beschreibung, Datei
+        self.frm_zuletzt = ttk.LabelFrame(rechts_aussen, text="Zuletzt freigegeben – für Ninox", padding=8)
+        self.zuletzt_vars = {k: tk.StringVar() for k in ("kundennummer", "beschreibung", "datei")}
+        for i, (key, titel) in enumerate((("kundennummer", "1  Kundennummer"), ("beschreibung", "2  Beschreibung"),
+                                          ("datei", "3  Datei"))):
+            ttk.Label(self.frm_zuletzt, text=titel).grid(row=i, column=0, sticky="w", pady=2)
+            wert = tk.Label(self.frm_zuletzt, textvariable=self.zuletzt_vars[key], anchor="w", relief="groove",
+                            background="#ffffff", padx=6, cursor="fleur" if self.dnd else "arrow", width=24)
+            wert.grid(row=i, column=1, sticky="ew", padx=4, pady=2)
+            if key == "datei":
+                ttk.Button(self.frm_zuletzt, text="📂", width=3, command=self._zuletzt_ordner).grid(row=i, column=2)
+            else:
+                ttk.Button(self.frm_zuletzt, text="📋", width=3,
+                           command=lambda k=key: self._zuletzt_kopieren(k)).grid(row=i, column=2)
+            self._ziehbar(wert, key)
+        self.frm_zuletzt.columnconfigure(1, weight=1)
+        ttk.Label(self.frm_zuletzt, style="Hinweis.TLabel", wraplength=300, justify="left",
+                  text=("Felder mit der Maus in Ninox ziehen oder mit 📋 kopieren." if self.dnd
+                        else "Mit 📋 kopieren und in Ninox einfügen.")).grid(row=3, column=0, columnspan=3, sticky="w")
+        self._zuletzt_datei: Path | None = None
 
         # dezent ausklappbar: was die ausführliche (Pro-)Erkennung noch gefunden hat
         self.var_mehr = tk.BooleanVar(value=bool(self.k.einstellungen.get("weitere_infos_offen", False)))
@@ -857,6 +909,37 @@ class App(tk.Tk):
         self.lbl_kopiert.configure(text=f"✔ kopiert: {self.var_beschr.get()}")
         self.einblenden(f"📋 In der Zwischenablage: {self.var_beschr.get()}")
 
+    def _ziehbar(self, widget, key: str):
+        """Feld als Ziehquelle anmelden: Text (Kundennummer, Beschreibung) bzw. die PDF-Datei."""
+        if not self.dnd:
+            return
+        from tkinterdnd2 import COPY, DND_FILES, DND_TEXT
+
+        def start(_evt):
+            if key == "datei":
+                if not (self._zuletzt_datei and self._zuletzt_datei.exists()):
+                    return "refuse_drop"
+                return (COPY, DND_FILES, (str(self._zuletzt_datei),))
+            text = self.zuletzt_vars[key].get()
+            return (COPY, DND_TEXT, text) if text else "refuse_drop"
+
+        try:
+            widget.drag_source_register(1, DND_FILES if key == "datei" else DND_TEXT)
+            widget.dnd_bind("<<DragInitCmd>>", start)
+        except Exception as ex:
+            logging.getLogger("bab").info("Ziehen nicht möglich: %s", ex)
+
+    def _zuletzt_kopieren(self, key: str):
+        text = self.zuletzt_vars[key].get()
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.einblenden(f"📋 In der Zwischenablage: {text}", 3000)
+
+    def _zuletzt_ordner(self):
+        if self._zuletzt_datei:
+            threading.Thread(target=lambda: kern.im_explorer_zeigen(self._zuletzt_datei), daemon=True).start()
+
     def einblenden(self, text: str, ms: int = 5000):
         """Kleine Einblendung unten rechts im Programmfenster, verschwindet von selbst."""
         alt = getattr(self, "_einblendung", None)
@@ -915,11 +998,17 @@ class App(tk.Tk):
                 self.vorschau.laden(pfad)
                 return
             self._pruefen_aktualisieren()
-            if beschreibung:
-                self.clipboard_clear()
-                self.clipboard_append(beschreibung)
-            self.einblenden(f"✔ Freigegeben: {name}" + (f"\n📋 In der Zwischenablage: {beschreibung}" if beschreibung else ""))
             ziel = self.v.verarbeitet / name
+            kdnr = w["kundennummer"]
+            self.clipboard_clear()
+            self.clipboard_append(kdnr)
+            self.zuletzt_vars["kundennummer"].set(kdnr)
+            self.zuletzt_vars["beschreibung"].set(beschreibung)
+            self.zuletzt_vars["datei"].set(name)
+            self._zuletzt_datei = ziel
+            self.frm_zuletzt.pack(fill="x", pady=(10, 0), before=self.btn_mehr)
+            self.einblenden(f"✔ Freigegeben: {name}\n📋 In der Zwischenablage: Kundennummer {kdnr}\n"
+                            "Beschreibung und Datei: rechts unter „Zuletzt freigegeben“")
             threading.Thread(target=lambda: kern.im_explorer_zeigen(ziel), daemon=True).start()
             self.lbl_grund.configure(text=f"✔ Freigegeben als {name}")
             for iid, p in self.pruef_pfade.items():
@@ -953,6 +1042,32 @@ class App(tk.Tk):
                                      tags=(("fehlt",) if grund.startswith("fehlt") or ";" in grund else ()))
             self.pruef_pfade[iid] = pfad
         self.nb.tab(self.tab_pruefen, text=f"Prüfen ({len(faelle)})" if faelle else "Prüfen")
+
+    def _pruefen_loeschen(self):
+        """Ausgewählte Dokumente aus „Prüfen“ endgültig löschen – nur nach ausdrücklicher Warnung."""
+        pfade = [self.pruef_pfade[i] for i in self.tree_p.selection() if i in self.pruef_pfade]
+        if not pfade:
+            messagebox.showinfo("Löschen", "Bitte zuerst Dokumente in der Liste auswählen (mehrere mit Strg oder Umschalt).")
+            return
+        namen = "\n".join(f"  • {p.name}" for p in pfade[:12]) + (f"\n  … und {len(pfade) - 12} weitere" if len(pfade) > 12 else "")
+        archiv = self.v.archiv if self.v else None
+        if not messagebox.askyesno(
+                "Endgültig löschen?",
+                f"{len(pfade)} Dokument(e) werden aus dem Ordner „Prüfen“ GELÖSCHT:\n\n{namen}\n\n"
+                f"Ordner: {pfade[0].parent}\n\n"
+                "⚠ Die Dateien kommen nicht in den Papierkorb und gehen verloren – auch für alle anderen, "
+                "die auf diesen Ordner zugreifen. "
+                + ("Nur der ursprüngliche Scan im Original-Archiv bleibt erhalten." if archiv else
+                   "Es gibt kein Original-Archiv – der Scan ist danach nicht mehr vorhanden.")
+                + "\n\nWirklich endgültig löschen?", icon="warning", default="no"):
+            return
+        if LIGHT:
+            self.vorschau.leeren()
+        fehler = self.v.loeschen(pfade)
+        self._pruefen_aktualisieren()
+        self.lbl_grund.configure(text=f"{len(pfade) - len(fehler)} Dokument(e) gelöscht.")
+        if fehler:
+            messagebox.showerror("Löschen", "Nicht gelöscht:\n" + "\n".join(fehler))
 
     def _pruefen_gewaehlt(self) -> Path | None:
         sel = self.tree_p.selection()
@@ -1547,9 +1662,9 @@ class App(tk.Tk):
         info = self.sperre.lesen() if self.sperre else None
         if info and not (self.sperre and self.sperre.ist_meine()):
             wer = f"{info.get('benutzer', '?')} auf {info.get('computer', '?')}"
-            self.lbl_status.configure(text=f"Überwachung gestoppt – Scan-Ordner gesperrt durch {wer}", foreground="#b25e00")
+            self._status(f"Überwachung gestoppt – Scan-Ordner gesperrt durch {wer}", "#b25e00")
         else:
-            self.lbl_status.configure(text="Überwachung gestoppt", foreground="")
+            self._status("Überwachung gestoppt")
 
     def _sperre_holen(self) -> bool:
         """Lock-Datei im Scan-Ordner setzen. Gehört sie jemand anderem: Hinweis und Sicherheitsabfrage."""
@@ -1603,13 +1718,13 @@ class App(tk.Tk):
 
         self.waechter = threading.Thread(target=wache, daemon=True)
         self.waechter.start()
-        self.lbl_status.configure(text=f"● Überwachung läuft  ({self.v.eingang})", foreground="#1b7a2f")
-        self.btn_start.configure(text="■ Überwachung stoppen")
+        self._status(f"● Überwachung läuft  ({self.v.eingang})", "#1b7a2f")
+        self._startknopf("■ Überwachung stoppen")
         log.info("Überwachung gestartet")
 
     def stop(self):
         self.stopp.set()
-        self.lbl_status.configure(text="Wird beendet …", foreground="")
+        self._status("Wird beendet …")
 
     def _jetzt(self):
         if not self.v:
@@ -1673,7 +1788,7 @@ class App(tk.Tk):
                     if self.sperre:
                         self.sperre.freigeben()
                     self._status_gestoppt(erzwingen=True)
-                    self.btn_start.configure(text="▶ Überwachung starten")
+                    self._startknopf("▶ Überwachung starten")
                     log.info("Überwachung gestoppt")
                     if self.nach_stopp:
                         aktion, self.nach_stopp = self.nach_stopp, None
@@ -1719,6 +1834,7 @@ def selbsttest(app: "App", ziel: Path) -> None:
         app._stammdaten_text()
         app.update()
         ziel.write_text(f"OK\nAusgabe: {kern.ANZEIGE_NAME}\nEinträge: {len(kinder)}\nVorschau: {vorschau}\n"
+                        f"Ziehen: {'ja' if app.dnd else 'nein'}\n"
                         f"Datenordner: {app.k.ordner}\nMeldung: {app.k.migriert or '-'}\n",
                         encoding="utf-8")
     except Exception:

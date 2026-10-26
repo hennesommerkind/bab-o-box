@@ -30,11 +30,17 @@ Den Ordner `BAB-O-BOX-Light` auf den PC kopieren und **BAB-O-BOX-Light.exe** sta
    - **Beschreibung** mit 📋 in die Zwischenablage kopieren und in Ninox einfügen.
    - **▸ Weitere Informationen aus der Erkennung** klappt dezent auf, was die ausführliche Erkennung noch gefunden hat
      (Antragsdatum, Zeiträume, Beträge, Kostensatz, Hinweise) – nur zum Nachsehen.
-   - **Freigeben**: Die Datei wird nach dem Muster benannt und in **Verarbeitet** gelegt, die Beschreibung landet in der
-     Zwischenablage (kurze Einblendung unten rechts), und der Ordner **Verarbeitet** öffnet sich mit der markierten Datei –
-     ist er schon offen, wird dieses Fenster nach vorn geholt. Danach ist das nächste Dokument ausgewählt.
+   - **Freigeben**: Die Datei wird nach dem Muster benannt und in **Verarbeitet** gelegt, die **Kundennummer** landet in
+     der Zwischenablage (kurze Einblendung unten rechts), und der Ordner **Verarbeitet** öffnet sich mit der markierten
+     Datei – ist er schon offen, wird dieses Fenster nach vorn geholt. Danach ist das nächste Dokument ausgewählt.
+   - **Zuletzt freigegeben – für Ninox** (rechts): 1 Kundennummer, 2 Beschreibung, 3 Datei. Jedes Feld lässt sich mit
+     der Maus direkt in Ninox ziehen (Text ins Textfeld, die Datei ins Dateifeld) oder mit 📋 kopieren.
+   - **🗑 Löschen …** (oder Entf): ausgewählte Dokumente (mehrere mit Strg/Umschalt) aus „Prüfen“ endgültig löschen –
+     nach einer deutlichen Warnung. Sie kommen nicht in den Papierkorb; nur der Scan im Original-Archiv bleibt (falls eingerichtet).
+     In der Übersicht bleibt ein Eintrag „gelöscht“.
+   - Oben stehen wie auf der Übersicht Status, „Jetzt verarbeiten“, Start/Stopp und die Ordner-Knöpfe.
    - Nach dem Laden von Stammdaten bietet die App an, die offenen Dokumente neu zu erkennen.
-3. Die Datei aus dem Explorer in Ninox ziehen und die Beschreibung mit Strg+V einfügen.
+3. In Ninox: Bewohner*in über die Kundennummer suchen (Strg+V), Beschreibung und Datei hineinziehen.
 
 Die abgelegten PDFs sind so groß wie der Scan: Die erkannte Schrift wird nur als unsichtbare Textebene hinzugefügt
 (die Datei bleibt durchsuchbar).

@@ -46,6 +46,12 @@ def verschlanken(basis: Path) -> None:
         if f.stem.lower() not in ENCODINGS_BEHALTEN:
             f.unlink()
 
+    dnd = intern / "tkinterdnd2" / "tkdnd"
+    if dnd.is_dir():  # tkdnd bringt Bibliotheken für alle Systeme mit – nur Windows 64 Bit behalten
+        for d in dnd.iterdir():
+            if d.is_dir() and d.name != "win-x64":
+                shutil.rmtree(d, ignore_errors=True)
+
     tess = basis / "tesseract"
     if (tess / "tesseract.exe").exists():
         noetig = dll_huelle(tess, "tesseract.exe")

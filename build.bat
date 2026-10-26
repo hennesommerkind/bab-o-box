@@ -30,7 +30,7 @@ exit /b 0
 echo Baue %1 ...
 pyinstaller --noconfirm --clean --windowed --name "%1" ^
   --add-data "config_standard.toml;." --add-data "regeln_alt;regeln_alt" ^
-  --collect-all pypdfium2 --collect-all pypdfium2_raw ^
+  --collect-all pypdfium2 --collect-all pypdfium2_raw --collect-all tkinterdnd2 ^
   %2 || exit /b 1
 set "TESS=C:\Program Files\Tesseract-OCR"
 set "ZIEL=dist\%1\tesseract"
