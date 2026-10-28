@@ -19,7 +19,12 @@ Den Ordner `BAB-O-BOX-Light` auf den PC kopieren und **BAB-O-BOX-Light.exe** sta
    `{haus}_{datum}_{art_lang}_{name}`, dazu das Datumsformat. Unabhängig von der Beschreibung; ein Beispiel wird angezeigt.
 5. **Namen von Mitarbeitenden** (unter „Allgemein“): Nachnamen der Kolleg*innen, an die Abtretungsschreiben gehen.
    Diese Namen werden nie als Bewohner*in erkannt.
-6. **Speichern**. Bei Bedarf **Mit Windows starten** einschalten.
+6. **E-Mail an die Häuser (Outlook)**: je Haus die E-Mail-Adresse eintragen, dazu Betreff und Text der Mail mit
+   Platzhaltern ({name_lesbar}, {kundennummer}, {art_lang}, {datum}, {details} …). {details} füllt das Programm passend
+   zum Dokument: Zeitraum, Betrag, Status/Notiz und einen Satz zur Art (z. B. bei Anforderungsschreiben „Unterlagen
+   fristgerecht einreichen“, bei Ablehnung „Widerspruchsfrist beachten“). Diese Sätze stehen in den Regeln unter
+   `[mail_art_hinweise]`.
+7. **Speichern**. Bei Bedarf **Mit Windows starten** einschalten.
 
 ## Im Alltag
 1. Scannen. Die App holt neue PDFs aus dem Eingangsordner (Übersicht → „Überwachung starten“ oder „Jetzt verarbeiten“).
@@ -35,6 +40,10 @@ Den Ordner `BAB-O-BOX-Light` auf den PC kopieren und **BAB-O-BOX-Light.exe** sta
      Datei – ist er schon offen, wird dieses Fenster nach vorn geholt. Danach ist das nächste Dokument ausgewählt.
    - **Zuletzt freigegeben – für Ninox** (rechts): 1 Kundennummer, 2 Beschreibung, 3 Datei. Jedes Feld lässt sich mit
      der Maus direkt in Ninox ziehen (Text ins Textfeld, die Datei ins Dateifeld) oder mit 📋 kopieren.
+   - **✉ An Haus senden (Outlook)** (unter „Zuletzt freigegeben“): erstellt eine Mail an das gewählte Haus mit der
+     umbenannten Datei im Anhang, Betreff und Text passend zum Dokument. Outlook öffnet sie als Entwurf zum Prüfen
+     (in den Einstellungen auf „sofort senden“ umstellbar – dann mit Rückfrage). Ohne klassisches Outlook öffnet sich
+     ein Mail-Entwurf (.eml) im Standard-Mailprogramm.
    - **🗑 Löschen …** (oder Entf): ausgewählte Dokumente (mehrere mit Strg/Umschalt) aus „Prüfen“ endgültig löschen –
      nach einer deutlichen Warnung. Sie kommen nicht in den Papierkorb; nur der Scan im Original-Archiv bleibt (falls eingerichtet).
      In der Übersicht bleibt ein Eintrag „gelöscht“.

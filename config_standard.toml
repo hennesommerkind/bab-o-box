@@ -1,7 +1,7 @@
 # BAB-O-BOX – STANDARDREGELN
 # Diese Datei kommt mit jedem Update neu. Eigene Abweichungen (z. B. andere Ninox-Feldnamen) gehören in
 # "eigene_regeln.toml" im Datenordner (App: Einstellungen → "Eigene Regeln bearbeiten").
-version = 12
+version = 13
 #
 # Die Muster sind auf die Bescheide der Agentur für Arbeit abgestimmt (Stand 2025/2026):
 #   Kopf:        "Kundennummer: 022P425485"  /  "Mein Zeichen: 021-022P425485"  /  Barcode *022P425485*
@@ -295,6 +295,7 @@ strasse   = 'Einrichtung_Str'
 plz       = 'Einrichtung_PLZ'
 ort       = 'Einrichtung_Stadt'
 anschrift = ''                               # falls die Anschrift in EINEM Feld steht: dessen Name
+mail      = 'E-Mail'                         # optional: E-Mail-Adresse des Hauses (Einstellungen haben Vorrang)
 
 [ninox.stammdaten.kostensaetze_felder]
 bezeichnung = 'Bezeichnung'                  # z. B. "B-PB 01/26" – Gültigkeit wird aus "01/26" gelesen
@@ -390,3 +391,16 @@ Aufhebung             = 'Aufhebungsbescheid'
 "Anhörung"            = 'Anhörung'
 Mitwirkung            = 'Mitwirkungsaufforderung'
 Anforderungsschreiben = 'Anforderungsschreiben'
+
+# --------------------------------------------------------------------------- Mail ans Haus (Light)
+# Satz, der je nach Art in die Mail kommt (Platzhalter {details} der Mail-Vorlage in den Einstellungen)
+[mail_art_hinweise]
+Bewilligung           = 'Bitte prüfen, ob Zeitraum und Kostensatz zur Belegung passen.'
+"Änderung"            = 'Bitte prüfen, ob die neue Berechnung zur Belegung passt.'
+"Änderung BAföG"      = 'Die Änderung beruht auf den geänderten BAföG-Freibeträgen.'
+"Änderung TS"         = 'Die Änderung beruht auf dem geänderten Tagessatz des Hauses.'
+Ablehnung             = 'Der Antrag wurde abgelehnt – bitte die Widerspruchsfrist laut Rechtsbehelfsbelehrung beachten.'
+Aufhebung             = 'Die Bewilligung wurde aufgehoben – bitte eine mögliche Erstattungsforderung prüfen.'
+"Anhörung"            = 'Bitte die Frist zur Stellungnahme im Schreiben beachten.'
+Mitwirkung            = 'Die Agentur fordert zur Mitwirkung auf – bitte mit der*dem Bewohner*in klären und fristgerecht reagieren.'
+Anforderungsschreiben = 'Die Agentur fordert Unterlagen an – bitte mit der*dem Bewohner*in klären und fristgerecht einreichen.'

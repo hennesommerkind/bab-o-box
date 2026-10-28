@@ -264,6 +264,16 @@ class Kalender(tk.Toplevel):
                 b.grid(row=r, column=c, padx=1, pady=1)
 
 
+class _TextVar:
+    """Damit ein mehrzeiliges Textfeld wie eine tk-Variable in den Einstellungen gespeichert werden kann."""
+
+    def __init__(self, widget: tk.Text):
+        self.widget = widget
+
+    def get(self) -> str:
+        return self.widget.get("1.0", "end-1c")
+
+
 class PdfVorschau(ttk.Frame):
     """Vorschau eines PDFs: alle Seiten untereinander, Blättern mit ▲ ▼ oder dem Mausrad.
     Die Datei wird in den Speicher gelesen, damit sie unter Windows nicht gesperrt ist und verschoben werden kann."""
@@ -842,7 +852,12 @@ class App(tk.Tk):
         ttk.Label(self.frm_zuletzt, style="Hinweis.TLabel", wraplength=300, justify="left",
                   text=("Felder mit der Maus in Ninox ziehen oder mit 📋 kopieren." if self.dnd
                         else "Mit 📋 kopieren und in Ninox einfügen.")).grid(row=3, column=0, columnspan=3, sticky="w")
+        self.btn_mail = ttk.Button(self.frm_zuletzt, text="✉ An Haus senden (Outlook)", command=self._an_haus_senden)
+        self.btn_mail.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.lbl_mail = ttk.Label(self.frm_zuletzt, style="Hinweis.TLabel", wraplength=300, justify="left")
+        self.lbl_mail.grid(row=5, column=0, columnspan=3, sticky="w")
         self._zuletzt_datei: Path | None = None
+        self._zuletzt: dict = {}
 
         # dezent ausklappbar: was die ausführliche (Pro-)Erkennung noch gefunden hat
         self.var_mehr = tk.BooleanVar(value=bool(self.k.einstellungen.get("weitere_infos_offen", False)))
@@ -929,6 +944,46 @@ class App(tk.Tk):
         except Exception as ex:
             logging.getLogger("bab").info("Ziehen nicht möglich: %s", ex)
 
+    def _mail_knopf(self):
+        haus = (self._zuletzt.get("werte") or {}).get("haus")
+        an = kern.haus_mail(self.k.cfg, haus)
+        if an:
+            self.btn_mail.state(["!disabled"])
+            self.lbl_mail.configure(text=f"an {haus}: {an}")
+        else:
+            self.btn_mail.state(["disabled"])
+            self.lbl_mail.configure(text=f"Für „{haus or '–'}“ ist keine E-Mail-Adresse hinterlegt "
+                                         "(Einstellungen → E-Mail an die Häuser).")
+
+    def _an_haus_senden(self):
+        z = self._zuletzt
+        if not z or not self._zuletzt_datei or not self._zuletzt_datei.exists():
+            messagebox.showinfo("Mail", "Die freigegebene Datei ist nicht mehr im Ordner „Verarbeitet“.")
+            return
+        werte = dict(z["werte"])
+        an = kern.haus_mail(self.k.cfg, werte.get("haus"))
+        if not an:
+            return
+        try:
+            betreff, text = kern.mail_bauen(self.k.cfg, werte, z["zusatz"], z["beschreibung"], z["datei"])
+        except ValueError as ex:
+            messagebox.showerror("Mail", str(ex))
+            return
+        senden = bool(self.k.cfg.get("mail", {}).get("senden"))
+        if senden and not messagebox.askyesno("Mail senden", f"Mail jetzt ohne Entwurf senden?\n\nAn: {an}\n"
+                                              f"Betreff: {betreff}\nAnhang: {z['datei']}"):
+            return
+        datei = self._zuletzt_datei
+
+        def fertig(ergebnis, fehler):
+            if fehler:
+                messagebox.showerror("Mail", f"Die Mail konnte nicht erstellt werden:\n{fehler}")
+                return
+            self.einblenden(f"✉ {ergebnis}: an {an}\n{betreff}")
+            log.info("Mail an %s (%s): %s", an, ergebnis, betreff)
+
+        self._hintergrund(lambda: kern.outlook_mail(an, betreff, text, datei, senden), fertig, "Erstelle Mail …")
+
     def _zuletzt_kopieren(self, key: str):
         text = self.zuletzt_vars[key].get()
         if text:
@@ -1006,6 +1061,8 @@ class App(tk.Tk):
             self.zuletzt_vars["beschreibung"].set(beschreibung)
             self.zuletzt_vars["datei"].set(name)
             self._zuletzt_datei = ziel
+            self._zuletzt = {"werte": dict(w), "zusatz": dict(self.p_zusatz), "beschreibung": beschreibung, "datei": name}
+            self._mail_knopf()
             self.frm_zuletzt.pack(fill="x", pady=(10, 0), before=self.btn_mehr)
             self.einblenden(f"✔ Freigegeben: {name}\n📋 In der Zwischenablage: Kundennummer {kdnr}\n"
                             "Beschreibung und Datei: rechts unter „Zuletzt freigegeben“")
@@ -1351,6 +1408,27 @@ class App(tk.Tk):
             self.lbl_stamm = ttk.Label(r, text=self._stammdaten_text(), style="Hinweis.TLabel", wraplength=700, justify="left")
             self.lbl_stamm.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
+            r = ttk.LabelFrame(f, text="E-Mail an die Häuser (Outlook)", padding=8)
+            r.pack(fill="x", pady=4)
+            ttk.Label(r, text="E-Mail-Adresse je Haus – nach dem Freigeben schickt „✉ An Haus senden“ die umbenannte "
+                              "Datei an das gewählte Haus.", style="Hinweis.TLabel", wraplength=800).grid(
+                row=0, column=0, columnspan=4, sticky="w")
+            self.frm_hausmail = ttk.Frame(r)
+            self.frm_hausmail.grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 8))
+            self._hausmail_fuellen()
+            feld(r, 2, "Betreff", ("mail", "betreff"))
+            ttk.Label(r, text="Text").grid(row=3, column=0, sticky="nw", pady=3)
+            txt = tk.Text(r, height=7, width=70, wrap="word", font=("Segoe UI", 9))
+            txt.insert("1.0", e.get("mail", {}).get("text", ""))
+            txt.grid(row=3, column=1, sticky="ew", pady=3)
+            self.e_vars[("mail", "text")] = _TextVar(txt)
+            ttk.Label(r, style="Hinweis.TLabel", wraplength=800, justify="left", text=(
+                "Platzhalter: {name_lesbar} {name} {kundennummer} {haus} {art} {art_lang} {datum} {beschreibung} {datei} "
+                "{details} – {details} enthält Zeitraum, Betrag, Status/Notiz und einen Satz passend zur Art "
+                "(z. B. bei Anforderungsschreiben: Unterlagen fristgerecht einreichen).")).grid(
+                row=4, column=1, sticky="w")
+            schalter(r, 5, "Sofort senden (ohne Entwurf) – sonst öffnet Outlook die Mail zum Prüfen", ("mail", "senden"))
+
             r = ttk.LabelFrame(f, text="Beschreibung zum Kopieren (z. B. für das Ninox-Feld „Beschreibung“)", padding=8)
             r.pack(fill="x", pady=4)
             feld(r, 0, "Vorsatz", ("beschreibung", "vorsatz"), hinweis="steht vorne, z. B. BAB")
@@ -1535,6 +1613,26 @@ class App(tk.Tk):
                           bescheiddatum="2025-12-03", zeitraum_von="2026-01-01", zeitraum_bis="2027-06-30")
         self.lbl_dateiname.configure(text=f"Beispiel: {kern.dateiname_bauen(cfg, e)}")
 
+    def _hausmail_fuellen(self):
+        """Eine Zeile je Haus (aus den Stammdaten) mit Feld für die E-Mail-Adresse."""
+        if not hasattr(self, "frm_hausmail"):
+            return
+        for w in self.frm_hausmail.winfo_children():
+            w.destroy()
+        for k in [k for k in self.e_vars if k[0] == "haus_mail"]:
+            del self.e_vars[k]
+        haeuser = self._haus_namen()
+        if not haeuser:
+            ttk.Label(self.frm_hausmail, text="Erst die Häuser laden (Stammdaten).", style="Hinweis.TLabel").grid(row=0, column=0)
+            return
+        gespeichert = self.k.einstellungen.get("haus_mail", {}) or {}
+        for i, haus in enumerate(haeuser):
+            ttk.Label(self.frm_hausmail, text=haus).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 6), pady=2)
+            var = tk.StringVar(value=gespeichert.get(haus, "") or kern.haus_mail({"_stammdaten": self.k.cfg.get("_stammdaten")}, haus))
+            self.e_vars[("haus_mail", haus)] = var
+            ttk.Entry(self.frm_hausmail, textvariable=var, width=34).grid(row=i // 2, column=(i % 2) * 2 + 1,
+                                                                          sticky="w", padx=(0, 18), pady=2)
+
     def _stammdaten_knoepfe(self, eltern) -> ttk.Frame:
         rahmen = ttk.Frame(eltern)
         for teil, titel in kern.STAMMDATEN_TEILE.items():
@@ -1555,6 +1653,8 @@ class App(tk.Tk):
         self.k.laden()
         self._konfiguration_anwenden()
         self.lbl_stamm.configure(text=self._stammdaten_text())
+        if teil == "haeuser":
+            self._hausmail_fuellen()
         text = f"{len(daten.get(teil) or [])} {titel} eingelesen."
         if teil == "kostensaetze":
             ohne = sum(1 for k in daten["kostensaetze"] if k.get("haus_id") is None)
@@ -1612,6 +1712,8 @@ class App(tk.Tk):
         self._kategorien_setzen()
         if LIGHT:
             self._beschreibung_neu()
+            if getattr(self, "_zuletzt", None):
+                self._mail_knopf()
         try:
             self.lbl_tess.configure(text=f"Verwendet: {kern.tesseract_finden(self.k.cfg)}")
         except RuntimeError:

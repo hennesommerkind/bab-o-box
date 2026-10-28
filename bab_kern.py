@@ -109,6 +109,11 @@ def standard_einstellungen() -> dict:
         "ocr": {"aktiv": True, "sprache": "deu", "tesseract": ""},
         "ueberwachung": {"intervall_s": 30, "beim_start_starten": False},
         "mitarbeitende": "",
+        "haus_mail": {},
+        "mail": {"betreff": "BAB {art_lang} vom {datum} – {name_lesbar} ({kundennummer})",
+                 "text": ("Hallo zusammen,\n\nim Anhang: {art_lang} der Agentur für Arbeit vom {datum} für "
+                          "{name_lesbar} (Kundennummer {kundennummer}).\n\n{details}\n\nViele Grüße"),
+                 "senden": False},
         "beschreibung": {"vorsatz": "BAB", "art": True, "art_lang": True, "datum": True, "zeitraum": False,
                          "haus": False, "name": False, "kundennummer": False, "betrag": False,
                          "datumsformat": "MM/JJ"},
@@ -1065,7 +1070,7 @@ def stammdaten_aufbereiten(haeuser_roh: list[dict], ks_roh: list[dict], cfg: dic
     for i, r in enumerate(haeuser_roh, 1):
         f = r.get("fields", r)
         h = {"id": r.get("id", i), **{k: (str(w(f, hf.get(k))).strip() if w(f, hf.get(k)) not in (None, "") else None)
-                                       for k in ("name", "kuerzel", "strasse", "plz", "ort", "anschrift")}}
+                                       for k in ("name", "kuerzel", "strasse", "plz", "ort", "anschrift", "mail")}}
         if h["name"] or h["kuerzel"]:
             daten["haeuser"].append(h)
     nach_name = {}
@@ -1614,6 +1619,116 @@ def _datum_format(iso: str | None, fmt: str) -> str:
     j, m, t = iso.split("-")
     return {"MM/JJ": f"{m}/{j[2:]}", "MM/JJJJ": f"{m}/{j}", "TT.MM.JJ": f"{t}.{m}.{j[2:]}", "JJJJ-MM-TT": iso,
             "JJJJMMTT": f"{j}{m}{t}", "MM-JJ": f"{m}-{j[2:]}", "JJJJ-MM": f"{j}-{m}"}.get(fmt, f"{t}.{m}.{j}")
+
+
+def haus_mail(cfg: dict, haus: str | None) -> str:
+    """E-Mail-Adresse des Hauses: Einstellungen (haus_mail) vor Stammdaten (Spalte E-Mail im Häuser-Export)."""
+    if not haus:
+        return ""
+    eigen = (cfg.get("haus_mail") or {}).get(haus, "")
+    if eigen and eigen.strip():
+        return eigen.strip()
+    for h in (cfg.get("_stammdaten") or {}).get("haeuser", []):
+        if haus in (h.get("kuerzel"), h.get("name")) and h.get("mail"):
+            return str(h["mail"]).strip()
+    return ""
+
+
+def _name_lesbar(name: str | None) -> str:
+    if not name:
+        return ""
+    if "," in name:
+        nach, vor = [t.strip() for t in name.split(",", 1)]
+        return f"{vor} {nach}".strip()
+    return name
+
+
+def mail_bauen(cfg: dict, werte: dict, zusatz: dict, beschreibung: str, datei: str) -> tuple[str, str]:
+    """Betreff und Text der Mail ans Haus – Vorlagen aus den Einstellungen, Details passend zur Art des Dokuments."""
+    m = cfg.get("mail", {})
+    art = werte.get("kategorie") or ""
+    fmt = "TT.MM.JJJJ"
+    details = []
+    if zusatz.get("zeitraum_von"):
+        details.append(f"Bewilligungszeitraum: {_datum_format(zusatz['zeitraum_von'], fmt)} bis "
+                       f"{_datum_format(zusatz.get('zeitraum_bis'), fmt)}")
+    if zusatz.get("betrag"):
+        details.append(f"BAB monatlich: {zusatz['betrag']} €")
+    if zusatz.get("status"):
+        details.append(f"Status: {zusatz['status']}")
+    if zusatz.get("notiz"):
+        details.append(f"Hinweis: {zusatz['notiz']}")
+    hinweis = (cfg.get("mail_art_hinweise") or {}).get(art) or (cfg.get("mail_art_hinweise") or {}).get(art.split(" ")[0], "")
+    if hinweis:
+        details.append(hinweis)
+    platz = {"kundennummer": werte.get("kundennummer") or "", "name": werte.get("name") or "",
+             "name_lesbar": _name_lesbar(werte.get("name")), "haus": werte.get("haus") or "", "art": art,
+             "art_lang": cfg.get("beschreibung_art", {}).get(art, art),
+             "datum": _datum_format(werte.get("bescheiddatum"), fmt), "beschreibung": beschreibung, "datei": datei,
+             "details": "\n".join(details)}
+
+    class Leer(dict):
+        def __missing__(self, k):
+            return ""
+    try:
+        betreff = (m.get("betreff") or "").format_map(Leer(platz))
+        text = (m.get("text") or "").format_map(Leer(platz))
+    except (ValueError, IndexError) as ex:
+        raise ValueError(f"Mail-Vorlage fehlerhaft (geschweifte Klammern prüfen): {ex}")
+    return re.sub(r"\s+", " ", betreff).strip(), re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
+_OUTLOOK_PS = r"""
+param([string]$datei)
+$ErrorActionPreference = 'Stop'
+$d = Get-Content -Raw -Encoding UTF8 $datei | ConvertFrom-Json
+$ol = New-Object -ComObject Outlook.Application
+$m = $ol.CreateItem(0)
+$null = $m.GetInspector          # lädt die Standard-Signatur
+$m.To = $d.an
+$m.Subject = $d.betreff
+$m.HTMLBody = $d.html + $m.HTMLBody
+$m.Attachments.Add($d.anhang) | Out-Null
+if ($d.senden) { $m.Send() } else { $m.Display() }
+"""
+
+
+def outlook_mail(an: str, betreff: str, text: str, anhang: Path, senden: bool = False) -> str:
+    """Mail mit Anhang über das installierte (klassische) Outlook – als Entwurf zum Prüfen oder direkt senden.
+    Geht das nicht (z. B. neues Outlook ohne COM), wird eine .eml-Entwurfsdatei erzeugt und geöffnet."""
+    if os.name == "nt":
+        tmp = Path(tempfile.gettempdir())
+        daten = tmp / "bab_o_box_mail.json"
+        skript = tmp / "bab_o_box_outlook.ps1"
+        import html as _html
+        html = ('<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">'
+                + _html.escape(text).replace("\n", "<br>") + "</div><br>")
+        daten.write_text(json.dumps({"an": an, "betreff": betreff, "html": html,
+                                     "anhang": str(anhang), "senden": bool(senden)}, ensure_ascii=False), encoding="utf-8")
+        skript.write_text(_OUTLOOK_PS, encoding="utf-8-sig")
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                str(skript), str(daten)], capture_output=True, text=True, timeout=60,
+                               creationflags=OHNE_FENSTER)
+            if r.returncode == 0:
+                return "gesendet" if senden else "Entwurf in Outlook geöffnet"
+            log.warning("Outlook nicht erreichbar: %s", r.stderr.strip()[-300:])
+        except Exception as ex:
+            log.warning("Outlook nicht erreichbar: %s", ex)
+        finally:
+            daten.unlink(missing_ok=True)
+    # Ersatz: .eml-Entwurf (öffnet im Standard-Mailprogramm als neue Nachricht)
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["To"] = an
+    msg["Subject"] = betreff
+    msg["X-Unsent"] = "1"
+    msg.set_content(text)
+    msg.add_attachment(anhang.read_bytes(), maintype="application", subtype="pdf", filename=anhang.name)
+    eml = Path(tempfile.gettempdir()) / f"{sicherer_dateiname(betreff)[:80] or 'BAB'}.eml"
+    eml.write_bytes(bytes(msg))
+    ordner_oeffnen(eml)
+    return "Entwurf als .eml geöffnet (Outlook-Automatik nicht verfügbar)"
 
 
 def beschreibung_bauen(werte: dict, zusatz: dict, b: dict, art_lang: dict) -> str:
