@@ -73,13 +73,17 @@ kundennummer_frei = [
   '(?<![A-Z0-9])(\d{3}[A-Z]\d{6})(?![A-Z0-9])',
 ]
 # "Datum: 03. Dezember 2025" (zählt 3-fach)
+# (?!\d) verhindert, dass OCR-Fehler wie "20226" als Jahr 2022 gelesen werden.
 bescheiddatum = [
-  'Datum\s*:?\s*(\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4})',
-  'Datum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+  'Datum\s*:?\s*(\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4}(?!\d))',
+  'Datum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
+  # "Berechnungsbogen BAB zum Bescheid vom …" nennt das Datum des eigenen Bescheids
+  'Berechnungsbogen\s+BAB\s+zum\s+Bescheid\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
 ]
-# "… zum Bescheid vom 03.12.2025" / "anbei erhalten Sie den Änderungsbescheid vom 03.12.2025" (zählt 1-fach je Fundstelle)
+# "… zum Bescheid vom 03.12.2025" / "anbei erhalten Sie den Änderungsbescheid vom 03.12.2025" (zählt 1-fach je Fundstelle).
+# "Änderungsbescheid zum Bescheid vom 30.07.2025" nennt den ALTEN Bescheid → ausgenommen (?<!zum ).
 bescheiddatum_fallback = [
-  '(?:Bescheid|Berechnungsbogen\s+BAB)\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4})',
+  '(?<!zum )Bescheid\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
 ]
 # Name der/des Auszubildenden – Gruppe 1. Wird geprüft (nur Buchstaben, 2–5 Wörter, keine Sperrworte).
 # NICHT "Guten Tag …" verwenden: bei Abtretung ist das Kolping als Empfänger.
@@ -167,8 +171,9 @@ hinweis = ['lehne\s+ich\s+.{0,80}\s+ab\b', 'kann\s+nicht\s+bewilligt\s+werden', 
 
 [[kategorien]]
 name    = 'Bewilligung'
-kopf    = ['^\s*Bescheid\s+f[üu]e?r\s', 'Bewilligungsbescheid']
-hinweis = ['bewillige\s+ich', 'Bewilligung']
+# "Bewilligungsbescheid" steht auch im Anschreiben ("Anlage: Bewilligungsbescheid") – daher nur Hinweis, kein Kopf.
+kopf    = ['^\s*Bescheid\s+f[üu]e?r\s']
+hinweis = ['Bewilligungsbescheid', 'bewillige\s+ich', 'Bewilligung']
 
 # --------------------------------------------------------------------------- Unterarten
 # Verfeinern eine erkannte Kategorie ("basis") anhand des Begründungstextes. Passen zwei → "Prüfen".

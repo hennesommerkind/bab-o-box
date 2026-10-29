@@ -365,6 +365,11 @@ def datum_iso(text: str | None) -> str | None:
     return None
 
 
+def _plausibel_datum(iso: str) -> bool:
+    """Schreibdatum muss im Bereich 2000 … nächstes Jahr liegen (sonst OCR-Fehler wie '20226')."""
+    return 2000 <= int(iso[:4]) <= datetime.now().year + 1
+
+
 def mehrheit(kandidaten: list[tuple[str, int]]) -> tuple[str | None, bool]:
     """Gewichtete Mehrheit. Liefert (Wert, eindeutig). Nicht eindeutig = die zwei besten liegen gleichauf."""
     punkte: dict[str, int] = {}
@@ -719,6 +724,10 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     m_cfg = cfg["muster"]
     e = Ergebnis()
     hinweise = []
+    # Scan-Text kaputt: fast jedes Zeichen steht in einer eigenen Zeile (OCR-Fehler)
+    nichtleer = [z for z in text.splitlines() if z.strip()]
+    if len(nichtleer) > 30 and sum(len(z.strip()) <= 2 for z in nichtleer) > 0.5 * len(nichtleer):
+        hinweise.append("Scan-Text unbrauchbar (fast jedes Zeichen in eigener Zeile) – OCR wiederholen oder Scan prüfen")
 
     # Kundennummer: beschriftete Fundstellen zählen 3-fach, Barcode/Freitext 1-fach; bei Gleichstand -> unsicher
     kandidaten = [(re.sub(r"\s", "", m.group(1)).upper(), 3)
@@ -735,8 +744,8 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
         hinweise.append("Kundennummer nicht eindeutig: " + ", ".join(verschiedene))
 
     # Bescheiddatum: 'Datum: 03. Dezember 2025' (3-fach) vor 'Bescheid vom 03.12.2025' (1-fach, mehrfach im Dokument)
-    kandidaten = [(d, 3) for m in alle(m_cfg.get("bescheiddatum", []), text) if (d := datum_iso(m.group(1)))]
-    kandidaten += [(d, 1) for m in alle(m_cfg.get("bescheiddatum_fallback", []), text) if (d := datum_iso(m.group(1)))]
+    kandidaten = [(d, 3) for m in alle(m_cfg.get("bescheiddatum", []), text) if (d := datum_iso(m.group(1))) and _plausibel_datum(d)]
+    kandidaten += [(d, 1) for m in alle(m_cfg.get("bescheiddatum_fallback", []), text) if (d := datum_iso(m.group(1))) and _plausibel_datum(d)]
     wert, eindeutig = mehrheit(kandidaten)
     if wert and eindeutig:
         e.bescheiddatum = wert
@@ -765,6 +774,9 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     if len(kerne) > 1:
         hinweise.append("Kundennummer nicht eindeutig – evtl. mehrere Personen im Scan: " +
                         ", ".join(sorted(min(v) for v in kerne.values())))
+        # Schreiben an Bevollmächtigte/Vertreter mit zweiter Nummer (OCR-tolerant: "ale Bevollmächtigte")
+        if re.search(r"\b(?:als|ale)\s+(?:Bevollm[äa]e?chtigte|Vertreter)", text, re.IGNORECASE):
+            hinweise.append("Schreiben an Bevollmächtigte/Vertreter – Kundennummer der Person prüfen")
 
     # Status-Regeln (z. B. vorläufige Entscheidung nach § 328 SGB III)
     for regel in cfg.get("status_regeln", []):
@@ -801,6 +813,8 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     zeilen = tabelle_lesen(text, cfg)
     if zeilen:
         e.zeitraum_von, e.zeitraum_bis, e.betrag = zeilen[0][0], zeilen[-1][1], zeilen[-1][2]
+        if len(zeilen) > 1 and zeilen[-1][2] == "0,00":
+            hinweise.append("Letzter Abschnitt hat 0,00 € – Betrag ist der letzte Abschnitt, bitte prüfen")
         e.abschnitte = [list(z) for z in zeilen]
         e.zeitraeume = " | ".join(f"{iso_zu_de(v)}–{iso_zu_de(b)}: {bt}" for v, b, bt in zeilen)
     else:
