@@ -18,6 +18,7 @@ Ausgabe:
 from __future__ import annotations
 
 import csv
+import difflib
 import json
 import logging
 import re
@@ -56,7 +57,7 @@ PARTIKEL = {"von", "van", "vom", "de", "del", "della", "der", "den", "di", "da",
 BESCHRIFTUNGEN = {w.lower() for w in (
     "Anschrift Ausbildungsbetrieb Arbeitgeber Betrieb Berufsschule Schule Elternteil Eltern Mutter Vater "
     "Erziehungsberechtigte Freibeträge Freibetrag Einkommen Summe Bedarf Unterbringung Art Neue Die Der Das "
-    "Auszubildende Auszubildenden Ausbildung Wohnheim Miete Großeltern GmbH Co KG AG eG Straße Str").split()}
+    "Auszubildende Auszubildenden Ausbildung Wohnheim Miete Großeltern GmbH Co KG AG eG Straße Str Zimmer Nr Nr.").split()}
 BA_IBAN = re.sub(r"\s", "", "DE50 7600 0000 0076 0016 17")  # Konto der Bundesagentur – öffentlich, bleibt
 OFFIZIELL = re.compile(r"Agentur|Arbeit|Bundes|Kolping|Jugendwohnen|Wohnheim|Gesetz|SGB|BAf|Sozialgesetz|"
                        r"Service|Bank|Bundesbank|Internet|Online|Berufsausbildungsbeihilfe", re.IGNORECASE)
@@ -98,6 +99,68 @@ class Ergebnis:
 
 # =========================================================================== Stufe 1: feste Muster
 
+# IBAN auch mit OCR-Lesefehlern: Punkte, Fragezeichen oder Leerzeichen zwischen den Ziffern
+# 16–20 Ziffern nach "DE": echte deutsche IBAN hat 20; OCR verliert oft Ziffern
+IBAN_LOSE = re.compile(r"\bDE[0-9O]{2}(?:[ .?]*[0-9O]){14,18}(?![0-9O])")
+# "geb. am 10:02.2006" – Tag/Monat mit OCR-Müll, das Jahr bleibt lesbar
+GEB_OCR = re.compile(r"((?:geb\.?\s*am|Geburtsdatum)\s*:?\s*)([0-9OIl|:;.,']{4,9})(\s*)((?:19|20)\d{2})(?!\d)",
+                     re.IGNORECASE)
+ZIMMER = re.compile(r"\b(Zimmer\s+(?:Nr\.?\s*)?)(\d{1,4}[a-z]?)\b", re.IGNORECASE)
+# Anschriften: Straße mit Hausnummer, PLZ mit Ort. Groß geschriebene Wörter, Hausnummer mit Zusatz/Bereich.
+STRASSE_NR = r"([A-ZÄÖÜ][\wäöüß.\-]+(?:\s[A-ZÄÖÜ][\wäöüß.\-]+)?)\s+(\d{1,4}\s?[a-z]?(?:\s?-\s?\d{1,4})?)"
+ANSCHRIFT_EINZEILIG = re.compile(STRASSE_NR + r",?\s+(\d{5})\s+([A-ZÄÖÜ][\wäöüß\-]{2,})")
+STRASSE_ZEILE = re.compile(r"^(\s*)" + STRASSE_NR + r"(?=[\s,]|$)")
+PLZ_ORT_ZEILE = re.compile(r"^(\s*)(\d{5})\s+([A-ZÄÖÜ][\wäöüß\-]{2,})")
+# Hinweise auf Behörden-/Kolping-Kontext: Anschriften daneben bleiben stehen (öffentlich bzw. Kolping-Haus)
+BEHOERDE_UMFELD = re.compile(r"Agentur für|Bundesagentur|Kolping|Besucheradresse|Postanschrift|Bankverbindung|"
+                             r"Jugendwohnen|Bundesbank|BA-Serv|Internet:|Pseudo|Musterbetrieb")
+
+
+def _behoerden_umfeld(zeilen: list[str], i: int, radius: int = 3) -> bool:
+    return any(BEHOERDE_UMFELD.search(z) for z in zeilen[max(0, i - radius): i + radius + 1])
+
+
+def _eigene_iban(roh: str) -> bool:
+    """Pseudonym-Konten (DE00 0000 …) und das öffentliche BA-Konto – nie als Fund melden."""
+    return roh.startswith("DE00000000000000") or roh == BA_IBAN
+
+
+def _geb_ocr(m, z: Zuordnung, datei: str, grenze: int) -> str:
+    jahr = int(m.group(4))
+    roh = m.group(2).replace(" ", "")
+    if not (1940 <= jahr <= grenze) or re.fullmatch(r"0?1[.:]0?1[.:]?", roh):
+        return m.group(0)
+    z.ersatz(f"{roh}{jahr}", "Geburtsdatum", datei, lambda n: f"01.01.{jahr}")
+    return m.group(1) + "01.01." + m.group(4)
+
+
+def _feste_anschriften(text: str, staemme: set[str], z: Zuordnung, datei: str) -> str:
+    """Private Anschriften ohne KI: 'Straße Nr, PLZ Ort' in einer Zeile oder PLZ-Zeile mit Straße darüber."""
+    zeilen = text.split("\n")
+    neu = list(zeilen)
+    for i, zeile in enumerate(zeilen):
+        if _behoerden_umfeld(zeilen, i) or "Pseudo" in zeile:
+            continue
+        m = ANSCHRIFT_EINZEILIG.search(zeile)
+        if m and not _ist_hausanschrift(m.group(0), staemme):
+            strasse = z.ersatz(f"{m.group(1)} {m.group(2)}", "Anschrift", datei, lambda n: f"Pseudoweg {n}")
+            ort = z.ersatz(f"{m.group(3)} {m.group(4)}", "Ort", datei, lambda n: f"99{n:03d} Pseudostadt")
+            neu[i] = zeile[:m.start()] + f"{strasse}, {ort}" + zeile[m.end():]
+            continue
+        p = PLZ_ORT_ZEILE.match(zeile)
+        if not p or p.group(2).startswith("99") or _ist_hausanschrift(zeile, staemme):
+            continue
+        for j in range(i - 1, max(-1, i - 6), -1):  # Straße höchstens 5 Zeilen darüber
+            s = STRASSE_ZEILE.match(zeilen[j])
+            if s and not _ist_hausanschrift(s.group(0), staemme):
+                strasse = z.ersatz(f"{s.group(2)} {s.group(3)}", "Anschrift", datei, lambda n: f"Pseudoweg {n}")
+                ort = z.ersatz(f"{p.group(2)} {p.group(3)}", "Ort", datei, lambda n: f"99{n:03d} Pseudostadt")
+                neu[j] = s.group(1) + strasse + zeilen[j][s.end(3):]
+                neu[i] = p.group(1) + ort + zeile[p.end():]
+                break
+    return "\n".join(neu)
+
+
 def _feste_muster(text: str, z: Zuordnung, datei: str) -> str:
     # Kundennummern (auch mit Leerzeichen, im Barcode *…* und in "Mein Zeichen: 021-…")
     def kdnr(m):
@@ -120,11 +183,11 @@ def _feste_muster(text: str, z: Zuordnung, datei: str) -> str:
 
     # IBAN (außer dem öffentlichen Konto der Bundesagentur)
     def iban(m):
-        roh = re.sub(r"\s", "", m.group(0))
-        if roh.upper() == BA_IBAN or roh.upper().replace("O", "0") == BA_IBAN:
+        roh = re.sub(r"[ .?]", "", m.group(0)).upper().replace("O", "0")
+        if _eigene_iban(roh):
             return m.group(0)
         return z.ersatz(roh, "IBAN", datei, lambda n: f"DE00 0000 0000 0000 {n:04d} 00")
-    text = re.sub(r"\bDE[0-9O]{2}(?:\s?[0-9O]{4}){4}\s?[0-9O]{2}\b", iban, text)
+    text = IBAN_LOSE.sub(iban, text)
 
     # Geburtsdaten: Tag und Monat ersetzen, Jahr bleibt (für Altersfragen relevant, allein nicht identifizierend).
     # Erfasst wird JEDES vollständige Datum, das mind. 13 Jahre zurückliegt – Bescheid-, Antrags- und
@@ -151,6 +214,12 @@ def _feste_muster(text: str, z: Zuordnung, datei: str) -> str:
             return m.group(0)
         return m.group(1) + z.ersatz(m.group(2), "Telefon", datei, lambda n: f"0000 {n:06d}")
     text = re.sub(r"((?:Tel(?:efon)?\.?|Mobil|Handy)\s*:?\s*)(\+?[\d /()-]{6,})", tel, text, flags=re.IGNORECASE)
+
+    # Geburtsdatum mit OCR-Lesefehlern ("geb. am 10:02.2006")
+    grenze = datetime.now().year - 13
+    text = GEB_OCR.sub(lambda m: _geb_ocr(m, z, datei, grenze), text)
+    # Zimmernummer im Wohnheim ist eine Angabe zur Person
+    text = ZIMMER.sub(lambda m: m.group(1) + z.ersatz(m.group(2), "Zimmer", datei, lambda n: f"{100 + n}"), text)
     return text
 
 
@@ -374,8 +443,17 @@ def _ist_hausanschrift(fund: str, staemme: set[str]) -> bool:
     strassen = [s for s in staemme if not s.startswith("plz:")]
     if any(re.search(rf"\b{re.escape(s)}", norm) for s in strassen):
         return True
+    if any(_aehnlich(s, norm) for s in strassen):  # OCR-Fehler im Straßennamen ("Wunhlheide" statt "Wuhlheide")
+        return True
     plz = re.search(r"\b\d{5}\b", fund)  # nur "PLZ Ort" ohne Straße: Haus-PLZ bleibt
     return bool(plz and "plz:" + plz.group(0) in staemme and not re.search(r"[^\W\d_]{3,}\.?\s*\d", fund.split(plz.group(0))[0]))
+
+
+def _aehnlich(stamm: str, norm: str) -> bool:
+    if len(stamm) < 5:
+        return False
+    return any(len(w) >= 5 and difflib.SequenceMatcher(None, stamm, w).ratio() >= 0.8
+               for w in re.findall(r"[^\W\d_]+", norm))
 
 
 def _name_kandidat(roh: str) -> str | None:
@@ -429,6 +507,7 @@ def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: boo
     vorher = len(z.zeilen)
     staemme = _hausanschriften(text, cfg)
     text = _feste_muster(text, z, datei)
+    text = _feste_anschriften(text, staemme, z, datei)
 
     # beschriftete Namen (auch ohne KI sicher)
     personen = []
@@ -495,7 +574,7 @@ def restpruefung(text: str, cfg: dict, z: Zuordnung, staemme: set[str] | None = 
     for m in re.finditer(rf"(?:Herrn?|Frau|Guten\s+Tag|Name\s*:)\s+({kern.WORT})", text):
         wort = m.group(1)
         if wort[0].isupper() and wort not in ersatzwoerter and not any(wort in e for e in ersatzwoerter) \
-                and not OFFIZIELL.search(wort) and wort.lower() not in KEIN_NAME:
+                and not OFFIZIELL.search(wort) and wort.lower() not in KEIN_NAME and not _ist_pseudonym(wort):
             zeile = text[max(0, m.start() - 20): m.end() + 20].replace("\n", " ")
             w.append(f"möglicher Name nicht ersetzt: …{zeile}…")
     # Beschriftete Angaben ("Anschrift: …", "Ausbildungsbetrieb: …") und "für X, Y (Elternteil …)"
@@ -503,7 +582,7 @@ def restpruefung(text: str, cfg: dict, z: Zuordnung, staemme: set[str] | None = 
     staemme = staemme or set()
     stellen = [(m.group(1), m.group(2)) for m in re.finditer(
         r"(?im)\b(Anschrift|Ausbildungsbetrieb|Arbeitgeber|Betrieb|Berufsschule|Schule|Mutter|Vater|"
-        r"Erziehungsberechtigte\w*)(?:\s+der\s+Eltern)?\s*:\s*([^\n]*)", text)]
+        r"Erziehungsberechtigte\w*)(?:[ \t]+der[ \t]+Eltern)?[ \t]*:[ \t]*([^\n]*)", text)]
     stellen += [("Elternteil", m.group(1)) for m in re.finditer(
         rf"f[üu]e?r\s+({kern.WORT}(?:[ ,]+{kern.WORT}){{0,3}})\s*\(\s*Elternteil", text)]
     for label, rest in stellen:
@@ -512,9 +591,25 @@ def restpruefung(text: str, cfg: dict, z: Zuordnung, staemme: set[str] | None = 
         verdacht = [x for x in re.findall(kern.WORT, rest)
                     if x[0].isupper() and x not in ersatzwoerter and not erlaubt.match(x) and x.lower() not in KEIN_NAME
                     and not OFFIZIELL.search(x) and not any(x in e for e in ersatzwoerter)
-                    and x.lower() not in BESCHRIFTUNGEN]
+                    and x.lower() not in BESCHRIFTUNGEN and not _ist_pseudonym(x)]
         if verdacht:
             w.append(f"bei „{label}“ steht noch: {', '.join(sorted(set(verdacht))[:4])} – bitte prüfen")
+    # OCR-Geburtsdaten, die noch nicht ersetzt sind (Jahr wird gezeigt, Tag/Monat nicht)
+    grenze = datetime.now().year - 13
+    for m in GEB_OCR.finditer(text):
+        if 1940 <= int(m.group(4)) <= grenze and not re.fullmatch(r"0?1[.:]0?1[.:]?", m.group(2).replace(" ", "")):
+            w.append("Geburtsdatum (mit Lesefehler) nicht ersetzt")
+    # IBAN-ähnliche Zahlenfolgen, die nicht ersetzt wurden
+    for m in IBAN_LOSE.finditer(text):
+        if not _eigene_iban(re.sub(r"[ .?]", "", m.group(0)).upper().replace("O", "0")):
+            w.append("IBAN-ähnliche Zahl übrig")
+    # PLZ mit Ort ohne erkennbare Straße und ohne Behörden-/Kolping-Umfeld
+    zeilen = text.split("\n")
+    for i, zeile in enumerate(zeilen):
+        p = PLZ_ORT_ZEILE.match(zeile)
+        if p and not p.group(2).startswith("99") and not _ist_hausanschrift(zeile, staemme or set()) \
+                and not _behoerden_umfeld(zeilen, i, radius=10):
+            w.append(f"PLZ mit Ort ohne erkennbare Straße (Zeile {i + 1}) – bitte prüfen")
     return sorted(set(w))
 
 
