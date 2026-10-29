@@ -1235,6 +1235,10 @@ class App(tk.Tk):
             ttk.Entry(r, textvariable=var, width=70).grid(row=i, column=1, sticky="ew", pady=3)
             ttk.Button(r, text="…", width=3, command=lambda v=var: self._wahl_ordner(v)).grid(row=i, column=2, padx=4)
 
+        self.var_s_schnell = tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, variable=self.var_s_schnell, text=(
+            "Schnell: Standardtext der Agentur nicht an die KI geben (empfohlen – etwa 3× schneller; Anschriftenfeld "
+            "und alle Zeilen mit unbekannten Wörtern prüft die KI weiterhin)")).pack(anchor="w", pady=(8, 0))
         k = ttk.Frame(f)
         k.pack(fill="x", pady=(10, 4))
         self.btn_s_start = ttk.Button(k, text="▶ Pseudonymisieren", command=self._schwaerzen_start)
@@ -1276,6 +1280,7 @@ class App(tk.Tk):
         except OSError:
             pass
         cfg = copy.deepcopy(self.k.cfg)
+        cfg.setdefault("schwaerzen", {})["vorfilter"] = bool(self.var_s_schnell.get())
         fehler = schwaerzen.ki_bereit(cfg)
         if fehler:
             messagebox.showerror("Schwärzen – lokale KI nötig", fehler + "\n\nEinrichten unter Einstellungen → Lokale KI.")

@@ -42,9 +42,12 @@ kommen mit jedem Update automatisch, eigene Regeln werden nie überschrieben.
 ## Bescheide pseudonymisieren (Reiter „Schwärzen“)
 Zum Weitergeben an die Entwicklung ohne personenbezogene Daten. Braucht die lokale KI (Ollama, siehe Einstellungen).
 1. Ordner mit PDF-Bescheiden und einen Ausgabeordner wählen (nicht innerhalb des Bescheid-Ordners).
-2. „Pseudonymisieren“ – Namen, Kundennummern, Geburtsdaten, IBAN, private Anschriften, Betriebe, Telefon und E-Mail werden durch Fantasiewerte im gleichen Format ersetzt.
-3. Die Textdateien in `zum_Senden` lesen (Warnungen stehen in `bericht.txt`) und erst dann weitergeben.
-4. `NUR_LOKAL\zuordnung.csv` enthält die Zuordnung zu den echten Daten – nie weitergeben, nach der Kontrolle löschen.
+2. „Schnell“ angehakt lassen: Die KI bekommt dann nur das Anschriftenfeld und die Zeilen mit Wörtern, die nicht zum
+   Standardtext der Agentur gehören (etwa ein Drittel des Textes) – rund dreimal schneller. Je mehr Bescheide in einem
+   Durchgang, desto besser erkennt das Programm den Standardtext.
+3. „Pseudonymisieren“ – Namen, Kundennummern, Geburtsdaten, IBAN, private Anschriften, Betriebe, Telefon und E-Mail werden durch Fantasiewerte im gleichen Format ersetzt.
+4. Die Textdateien in `zum_Senden` lesen (Warnungen stehen in `bericht.txt`) und erst dann weitergeben.
+5. `NUR_LOKAL\zuordnung.csv` enthält die Zuordnung zu den echten Daten – nie weitergeben, nach der Kontrolle löschen.
 
 ## Nur ein Rechner gleichzeitig (Sperre)
 Beim Start der Überwachung (oder „Jetzt verarbeiten“) legt das Programm im Scan-Ordner die Datei `BAB-O-BOX.lock` an –

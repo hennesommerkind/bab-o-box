@@ -21,6 +21,7 @@ import csv
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -205,8 +206,116 @@ def _abschnitte(text: str, laenge: int) -> list[str]:
     return stuecke
 
 
-def ki_fundstellen(text: str, cfg: dict, melden: Callable[[str], None]) -> list[tuple[str, str]]:
+# =========================================================================== Vorfilter (Tempo)
+# Die KI braucht auf dem Laptop (nur CPU) pro 2.500 Zeichen rund eine Minute. Ein Bescheid besteht aber zum größten
+# Teil aus Standardtext der Agentur (Rechtsbehelfsbelehrung, Berechnungsbogen …), in dem keine Personen stehen.
+# Deshalb bekommt die KI nur das Anschriftenfeld und die Zeilen, in denen ein Wort vorkommt, das NICHT in den
+# meisten Bescheiden des Stapels steht – plus je eine Nachbarzeile als Zusammenhang.
+
+# Wörter aus dem Standardtext der Agentur (aus vielen Bescheiden gezählt, keine Namen) – gilt auch für einzelne Bescheide
+BASIS_STANDARD = set("""
+abdruck abs abschluss abschnitts absender abtretungserklärung agentur allgemeiner
+altersvorsorgebeiträge angabe anlage anlagen anrechnungsbetrag anruf anschrift anspruch
+anspruchsvoraussetzungen antrag antwort anwendung anzurechnendes arbeit arbeitsförderung
+arbeitskleidung art aufforderung auftrag august aus ausbildung ausbildungsstätte
+ausbildungsvergütung ausscheiden auszubildende auszubildenden bab bab-a bafög bank bankverbindung
+bedarf bedarfsberechnung bedeutung behörden bei bekanntgabe berechnung berechnungsbogen berlin
+berufsausbildung berufsausbildungsbeihilfe berufsausbildungsverhältnis berufsausbildungsvertrag
+bescheid bescheides bestand bestandteil besteht besucheradresse betrag betriebsstilllegung
+betriebsübernahme beträge bevollmächtigte bewilligung bewilligungszeitraum bic bildungsmaßnahme
+buch bundesagentur bundesaus bundesausbildungsförderungsgesetzes bundesbank dafür das datum der des
+die dieser dieses dokumentenkopf dreißigstel drittes einkom einkommen einkommens
+einkommensanrechnung einmalige einmalzahlungen elektronisch eltern ende entscheidung erkrankung
+errechnet erster erstes euro fahrkosten fahrpreiserhöhungen familienverhältnisse fehltag form frage
+frau freibetrag für geburtsdatum gegen geldbuße gesamtbedarf gesetzestexte gewerbesteuer großeltern
+grunde grundsicherung gründe gründen grüßen guten hausnummer hilfen höhe iban ihnen ihr ihre ihrem
+ihren ihrer iii ill information informationen internet ist jugendberufsagentur jugendwohnen
+kalendermonat kalendermonats kalendertag kennziffern kinder kinderbetreuungskosten kindergeld
+kindergeldnummer kirchen kochstraße kolping konto kosten krankheit kundenname kundennummer
+lebenspartner lebensunterhalt leistung leistungen leistungsangelegenheit mail mein miete mit mitte
+mitteilung mitteilungspflichten mitteln monat monate monats monatsbetra monatsbetrages märz
+möglichkeiten nach nachricht nachweis name neue niederschrift nähere online online-angebot
+ordnungswidrigkeit ort paragraphenangaben partner person postanschrift postfach postleitzahl recht
+rechtsverordnungen regelung rückfragen schreiben schriftformersatz schriftlich schwangerschaft
+seite service-haus servicerufnummer sgb sie solidaritätszuschlag sollten sonstige sozialgesetzbuch
+sozialpauschale stellen str straße summe tag tagen team team-postfach teil teilnahme telefon-nr
+träger uhr unser unterbrechung unterbringung unterhaltsleistungen unterschrift verbindung verfügung
+vertreters veränderungsmitteilung vierten vor voraussetzungen vordrucke vorliegen vorname
+vorschriften vorwahl waisenrente wechsel weise weitere wenn widerspruch wiederaufnahme wochen
+wohnheim wohnort zahlungen zeichen zeit zeitraum zuname zur zusammenfassung änderung änderungen
+über überprüfung überweisung überweisungsträgern übrigen
+""".split())
+
+GROSSWORT = re.compile(rf"\b[A-ZÄÖÜ]{kern.B}{{2,}}(?:[-']{kern.B}+)*")
+ANSCHRIFT_HINWEIS = re.compile(r"\b\d{5}\s+[A-ZÄÖÜ]|(?:stra(?:ß|ss)e|str\.|weg|platz|allee|gasse|ring|damm)\s*\d", re.IGNORECASE)
+
+
+def standardwoerter(texte: dict[str, str], anteil: float = 0.25, mindestens: int = 3) -> set[str]:
+    """Wörter, die in vielen Bescheiden des Stapels vorkommen (= Standardtext). Gezählt wird je Person
+    (gleiche Kundennummer = eine Person), damit drei Bescheide derselben Person ihren Namen nicht 'normal' machen."""
+    je_person: dict[str, set[str]] = {}
+    for name, t in texte.items():
+        m = re.search(r"\b\d{3}\s?[A-Z]\s?\d{6}\b", t)
+        schluessel = re.sub(r"\s", "", m.group(0)) if m else name
+        je_person.setdefault(schluessel, set()).update(w.lower() for w in GROSSWORT.findall(t))
+    zaehler: dict[str, int] = {}
+    for woerter in je_person.values():
+        for w in woerter:
+            zaehler[w] = zaehler.get(w, 0) + 1
+    grenze = max(mindestens, int(len(je_person) * anteil + 0.999))
+    return {w for w, n in zaehler.items() if n >= grenze}
+
+
+def _ist_standard(w: str, standard: set[str], cache: dict) -> bool:
+    w = w.lower()
+    if w in standard or w in BASIS_STANDARD or w in KEIN_NAME:
+        return True
+    if w not in cache:  # Lesefehler der Texterkennung („Feststeiiungen“) wie das richtige Wort behandeln
+        import difflib
+        cache[w] = len(w) >= 6 and bool(difflib.get_close_matches(w, list(standard | BASIS_STANDARD), n=1, cutoff=0.86))
+    return cache[w]
+
+
+BETRAGSZEILE = re.compile(r"\d,\d{2}\s*(?:€|EUR)|§|\bSGB\b|\bAbs\.", re.IGNORECASE)
+
+
+def ki_auszug(text: str, standard: set[str], kopf_zeichen: int = 1200) -> str:
+    """Nur die Teile des Textes, in denen Personen/Anschriften/Betriebe stehen können."""
+    zeilen = text.splitlines()
+    cache: dict = {}
+    behalten = set()
+    pos = 0
+    for i, z in enumerate(zeilen):
+        if pos < kopf_zeichen:  # Anschriftenfeld und Anrede immer
+            behalten.add(i)
+        pos += len(z) + 1
+        woerter = [w for w in GROSSWORT.findall(z)
+                   if not (w.isupper() and len(w) <= 4) and not _ist_pseudonym(w) and not OFFIZIELL.search(w)
+                   and not _ist_standard(w, standard, cache)]
+        if BETRAGSZEILE.search(z) and not ANSCHRIFT_HINWEIS.search(z):
+            woerter = []  # Berechnungsbogen/Paragrafen: dort stehen keine Namen
+        if woerter or ANSCHRIFT_HINWEIS.search(z):
+            behalten.update((i - 1, i, i + 1))
+    teile, vorher, gesehen = [], -2, set()
+    for i in sorted(j for j in behalten if 0 <= j < len(zeilen)):
+        z = zeilen[i].strip()
+        if z and z in gesehen:  # Kopfzeilen wie „Kundenname …“ stehen auf jeder Seite – einmal reicht
+            continue
+        gesehen.add(z)
+        if i > vorher + 1:
+            teile.append("…")
+        teile.append(zeilen[i])
+        vorher = i
+    return "\n".join(teile)
+
+
+def ki_fundstellen(text: str, cfg: dict, melden: Callable[[str], None],
+                   standard: set[str] | None = None) -> list[tuple[str, str]]:
     k = cfg["ki"]
+    if standard is not None:
+        auszug = ki_auszug(text, standard)
+        melden(f"  an die KI: {len(auszug):,} von {len(text):,} Zeichen (Standardtext ausgelassen)".replace(",", "."))
+        text = auszug
     stuecke = _abschnitte(text, int(cfg.get("schwaerzen", {}).get("abschnitt_zeichen", 2500)))
     funde: list[tuple[str, str]] = []
     for i, stueck in enumerate(stuecke, 1):
@@ -215,7 +324,9 @@ def ki_fundstellen(text: str, cfg: dict, melden: Callable[[str], None]) -> list[
             r = requests.post(k["url"].rstrip("/") + "/api/chat", json={
                 "model": k["modell"], "stream": False, "format": KI_SCHEMA,
                 "messages": [{"role": "user", "content": KI_ANLEITUNG + stueck}],
-                "options": {"temperature": 0}, "keep_alive": k.get("keep_alive", "2m")},
+                "options": {"temperature": 0, "num_ctx": int(cfg.get("schwaerzen", {}).get("num_ctx", 4096))},
+                # während eines Stapels geladen lassen – das Neuladen kostet jedes Mal Zeit
+                "keep_alive": cfg.get("schwaerzen", {}).get("keep_alive", "30m")},
                 timeout=k.get("timeout_s", 420))
             r.raise_for_status()
             daten = json.loads(r.json()["message"]["content"])
@@ -314,7 +425,7 @@ def _personen_ersetzen(text: str, funde: list[str], z: Zuordnung, datei: str) ->
 
 
 def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: bool,
-                     melden: Callable[[str], None] = lambda _: None) -> Ergebnis:
+                     melden: Callable[[str], None] = lambda _: None, standard: set[str] | None = None) -> Ergebnis:
     vorher = len(z.zeilen)
     staemme = _hausanschriften(text, cfg)
     text = _feste_muster(text, z, datei)
@@ -344,7 +455,7 @@ def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: boo
         personen.append(_name_kandidat(m.group(1)) or '')
 
     if mit_ki:
-        for t, art in ki_fundstellen(text, cfg, melden):
+        for t, art in ki_fundstellen(text, cfg, melden, standard):
             if art == "PERSON":
                 woerter = re.findall(kern.WORT, kern.ANREDE.sub("", t))
                 klein = [w for w in woerter if w[0].islower() and w.lower() not in PARTIKEL]
@@ -425,17 +536,34 @@ def stapel(quelle: Path, ziel: Path, cfg: dict, mit_ki: bool, melden: Callable[[
                f"KI: {'ja, ' + cfg['ki']['modell'] if mit_ki else 'NEIN – nur feste Muster, Namen im Fließtext können übrig sein'}",
                ""]
     fertig = mit_warnung = 0
+    # 1. Texterkennung für alle Dateien (schnell) – daraus lernt der Vorfilter, was Standardtext ist
+    texte: dict[str, str] = {}
+    for nr, pdf in enumerate(dateien, 1):
+        if abbrechen():
+            break
+        melden(f"Texterkennung [{nr}/{len(dateien)}] {pdf.name}")
+        try:
+            tmp = arbeit / f"bescheid_{nr:03d}_ocr.pdf"
+            texte[f"bescheid_{nr:03d}"] = kern.ocr(pdf, tmp, cfg)
+            tmp.unlink(missing_ok=True)
+        except Exception as ex:
+            texte[f"bescheid_{nr:03d}"] = ex
+    vorfilter = mit_ki and cfg.get("schwaerzen", {}).get("vorfilter", True)
+    gute = {n: t for n, t in texte.items() if isinstance(t, str)}
+    standard = (standardwoerter(gute) if len(gute) >= 3 else set()) if vorfilter else None
+    # 2. Pseudonymisieren
     for nr, pdf in enumerate(dateien, 1):
         if abbrechen():
             melden("Abgebrochen.")
             break
-        melden(f"[{nr}/{len(dateien)}] {pdf.name}")
         name = f"bescheid_{nr:03d}"  # Dateiname selbst kann Namen enthalten -> neutral
+        melden(f"[{nr}/{len(dateien)}] {pdf.name}")
+        start = time.monotonic()
         try:
-            tmp = arbeit / f"{name}_ocr.pdf"
-            text = kern.ocr(pdf, tmp, cfg)
-            tmp.unlink(missing_ok=True)
-            erg = pseudonymisieren(text, cfg, z, name, mit_ki, melden)
+            text = texte.get(name)
+            if not isinstance(text, str):
+                raise text if isinstance(text, Exception) else RuntimeError("nicht erkannt")
+            erg = pseudonymisieren(text, cfg, z, name, mit_ki, melden, standard)
             kopf = (f"# BAB-O-BOX pseudonymisiert – {name} – {erg.ersetzungen} neue Ersetzungen"
                     f"{' – KI: ja' if erg.ki_genutzt else ' – KI: nein'}\n"
                     f"# Bitte vor dem Weitergeben durchlesen. Restwarnungen: {len(erg.warnungen)}\n\n")
@@ -444,7 +572,9 @@ def stapel(quelle: Path, ziel: Path, cfg: dict, mit_ki: bool, melden: Callable[[
                            f", {len(erg.warnungen)} Warnungen:\n    - " + "\n    - ".join(erg.warnungen)))
             fertig += 1
             mit_warnung += bool(erg.warnungen)
-            melden(f"   → {name}.txt ({erg.ersetzungen} Ersetzungen, {len(erg.warnungen)} Warnungen)")
+            dauer = time.monotonic() - start
+            melden(f"   → {name}.txt ({erg.ersetzungen} Ersetzungen, {len(erg.warnungen)} Warnungen, "
+                   f"{int(dauer // 60)}:{int(dauer % 60):02d} min)")
         except Exception as ex:
             bericht.append(f"{name}: FEHLER {ex}")
             melden(f"   FEHLER: {ex}")
