@@ -40,7 +40,7 @@ POOL = ["Ahorn", "Birke", "Buche", "Eiche", "Erle", "Esche", "Linde", "Ulme", "W
         "Wacholder", "Mispel", "Schlehe", "Vogelbeere", "Hainbuche", "Espe", "Zirbe", "Douglasie"]
 # Wörter, die nach "Frau", "Name:" usw. stehen können, aber keine Namen sind
 KEIN_NAME = {w.lower() for w in (
-    "E-Mail Mail Telefon Tel Datum Zeichen Ihr Ihre Ihren Ihrem Name Vorname Anschrift Geburtsdatum Guten Tag Sehr "
+    "Damen Herren E-Mail Mail Telefon Tel Datum Zeichen Ihr Ihre Ihren Ihrem Name Vorname Anschrift Geburtsdatum Guten Tag Sehr "
     "geehrte geehrter Mit freundlichen Grüßen Grüssen Auftrag im und oder Kundennummer Kundenname Herr Herrn Frau "
     "von der die das den dem bei für vom zum zur Sie Ihnen Bescheid Antrag Leistung Kenntnisnahme Rückfragen "
     "Abdruck Anlage Seite Berechnungsbogen Einkommensfeststellung Eltern Elternteil Ehegatte Ehegatten "
@@ -502,9 +502,29 @@ def _personen_ersetzen(text: str, funde: list[str], z: Zuordnung, datei: str) ->
     return text
 
 
+ANREDE_NAME = re.compile(
+    rf"(?:Guten[ \t]+Tag|Sehr[ \t]+geehrte[rs]?)[ \t]+(?:(?:Frau|Herrn?)[ \t]+)?"
+    rf"((?:(?=[A-ZÄÖÜ]){kern.WORT}[ \t]+){{0,3}}(?=[A-ZÄÖÜ]){kern.WORT})(?=[ \t]*[,\n])")
+
+
+def _anrede_namen(text: str, z: Zuordnung, datei: str) -> str:
+    """Namen hinter "Guten Tag"/"Sehr geehrte …" immer ersetzen – auch kurze ("Frau Ho") und Vornamen, die neben
+    einem schon ersetzten Nachnamen stehen ("Guten Tag Vorname Birkeulme,"). Sonst bleiben sie stehen, wenn
+    weder Muster noch KI sie finden."""
+    offen = []
+    for m in ANREDE_NAME.finditer(text):
+        for w in re.findall(kern.WORT, m.group(1)):
+            if w.lower() not in KEIN_NAME and not OFFIZIELL.search(w) and not _ist_pseudonym(w) and len(w) >= 2:
+                offen.append(w)
+    for w in sorted(set(offen), key=len, reverse=True):
+        text = _ersetze_ueberall(text, w, z.ersatz(w, "Name", datei, _pool_name))
+    return text
+
+
 def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: bool,
                      melden: Callable[[str], None] = lambda _: None, standard: set[str] | None = None) -> Ergebnis:
     vorher = len(z.zeilen)
+    text, _ = kern.einzelzeichen_reparieren(text)  # Textebene "ein Zeichen pro Zeile" – sonst bleiben Namen unerkannt
     staemme = _hausanschriften(text, cfg)
     text = _feste_muster(text, z, datei)
     text = _feste_anschriften(text, staemme, z, datei)
@@ -553,7 +573,11 @@ def pseudonymisieren(text: str, cfg: dict, z: Zuordnung, datei: str, mit_ki: boo
                 text = _ersetze_ueberall(text, t, z.ersatz(t, "Betrieb", datei, lambda n_: f"Musterbetrieb {n_}"))
 
     text = _personen_ersetzen(text, personen, z, datei)
-    return Ergebnis(text=text, ersetzungen=len(z.zeilen) - vorher, warnungen=restpruefung(text, cfg, z, staemme), ki_genutzt=mit_ki)
+    text = _anrede_namen(text, z, datei)
+    warnungen = restpruefung(text, cfg, z, staemme)
+    if not kern.wortabstand_ok(text):
+        warnungen.append("Text ohne Wortabstände (OCR) – Namen werden nicht zuverlässig erkannt: NICHT weitergeben")
+    return Ergebnis(text=text, ersetzungen=len(z.zeilen) - vorher, warnungen=sorted(set(warnungen)), ki_genutzt=mit_ki)
 
 
 def restpruefung(text: str, cfg: dict, z: Zuordnung, staemme: set[str] | None = None) -> list[str]:

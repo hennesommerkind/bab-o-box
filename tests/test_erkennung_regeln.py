@@ -52,10 +52,23 @@ class DatumTests(unittest.TestCase):
 
 
 class HinweisTests(unittest.TestCase):
-    def test_zeichen_pro_zeile_wird_als_unbrauchbar_gemeldet(self):
-        text = "\n".join(list("Agentur für Arbeit Musterstadt Bescheid ") * 2)
-        e = lesen(text)
+    def test_zeichen_pro_zeile_wird_zusammengesetzt_und_gelesen(self):
+        inhalt = ("Agentur für Arbeit Musterstadt Datum: 03. März 2026 Kundennummer: 900X000001 "
+                  "Bescheid für Max Muster, geb. am 01.01.2000 Änderungsbescheid zum Bescheid vom 30.07.2025")
+        e = lesen("\n".join(list(inhalt)))
+        self.assertIn("zusammengesetzt", e.hinweise)
+        self.assertEqual(e.kundennummer, "900X000001")
+        self.assertEqual(e.bescheiddatum, "2026-03-03")
+        self.assertEqual(e.kategorie, "Änderung")
+
+    def test_zusammengeklebter_text_ohne_leerzeichen_wird_gemeldet(self):
+        inhalt = "AgenturfuerArbeitMusterstadtDatum:03.03.2026Kundennummer:900X000001" * 3
+        e = lesen("\n".join(list(inhalt)))
         self.assertIn("Scan-Text unbrauchbar", e.hinweise)
+
+    def test_normaler_text_wird_nicht_veraendert(self):
+        text = KOPF + "Bescheid für Max Muster, geb. am 01.01.2000\n" + TABELLE
+        self.assertEqual(bab_kern.einzelzeichen_reparieren(text), (text, False))
 
     def test_vertreter_schreiben_wird_gemeldet(self):
         text = KOPF + "Kundennummer: 900X000001\nMein Zeichen: 021-900X000002\nals Vertreter erhalten Sie den Bescheid vom 03.03.2026.\n" + TABELLE
@@ -79,6 +92,51 @@ class HinweisTests(unittest.TestCase):
         hinweise = lesen(text).hinweise
         self.assertNotIn("Scan-Text", hinweise)
         self.assertNotIn("Bevollmächtigte", hinweise)
+
+
+class NeueArtenUndDatenTests(unittest.TestCase):
+    def test_widerspruchsverfahren_ist_kein_bescheid(self):
+        text = KOPF + "Rechtsbehelfsstelle\nWiderspruchsverfahren von Herrn Muster wegen des Anspruchsbeginns\n"
+        self.assertEqual(lesen(text).kategorie, "Widerspruch")
+
+    def test_rechtsbehelfs_url_im_bescheid_loest_nichts_aus(self):
+        text = (KOPF + "Bescheid für Max Muster, geb. am 01.01.2000\n" + TABELLE +
+                "Informationen unter: www.arbeitsagentur.de/rechtsbehelfsstellen).\n")
+        self.assertEqual(lesen(text).kategorie, "Bewilligung")
+
+    def test_abhilfebescheid_ist_aenderung(self):
+        text = KOPF + "Abhilfebescheid im Widerspruchsverfahren\nWiderspruchs-Nr: W-1\n" + TABELLE
+        self.assertTrue((lesen(text).kategorie or "").startswith("Änderung"))
+
+    def test_berechnungsbogen_allein(self):
+        text = "Berechnungsbogen BAB zum Bescheid vom 19.02.2026\nKundenname Erle Muster 900X000002\n"
+        self.assertEqual(lesen(text).kategorie, "Berechnungsbogen")
+
+    def test_berechnungsbogen_hinten_im_bescheid_bleibt_bewilligung(self):
+        text = (KOPF + "Bescheid für Max Muster, geb. am 01.01.2000\n" + TABELLE +
+                "\nBerechnungsbogen BAB zum Bescheid vom 03.03.2026\n")
+        self.assertEqual(lesen(text).kategorie, "Bewilligung")
+
+    def test_ocr_komma_im_datum(self):
+        self.assertEqual(lesen("Datum: 30, September 2025\n" + TABELLE).bescheiddatum, "2025-09-30")
+
+    def test_gleichstand_datum_vor_bescheid_ueberschrift_gewinnt(self):
+        text = ("Datum: 17. Juli 2024\nAnschreiben ohne Bescheid\n\n"
+                "Datum: 14. August 2024\nÄnderungsbescheid gemäß § 48 SGB X\n" + TABELLE)
+        self.assertEqual(lesen(text).bescheiddatum, "2024-08-14")
+
+    def test_bescheid_vom_in_klartext_loest_gleichstand(self):
+        text = ("Datum: 22. April 2026\nals Bevollmächtigte erhalten Sie den Bescheid vom 24. März 2026.\n"
+                "Datum: 24.03.2026 13:31\n" + TABELLE)
+        self.assertEqual(lesen(text).bescheiddatum, "2026-03-24")
+
+    def test_tabelle_spaltenweise_zerlegt(self):
+        text = (KOPF + "Berufsausbildungsbeihilfe\n07. 08. 2023\n01. 01. 2024\n01. 08. 2024\n31. 12, 2023\n"
+                "31. 07. 2024\n31.01.2025\nmtl. Betrag\n1. 949,00\n1.998,00\n2. 017, 00\n")
+        e = lesen(text)
+        self.assertEqual(e.zeitraum_bis, "2025-01-31")
+        self.assertEqual(e.betrag, "2.017,00")
+        self.assertEqual(len(e.abschnitte), 3)
 
 
 if __name__ == "__main__":

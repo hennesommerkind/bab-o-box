@@ -356,7 +356,7 @@ def datum_iso(text: str | None) -> str | None:
             return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
         except ValueError:
             pass
-    m = re.match(r"(\d{1,2})\.?\s*([A-Za-zäöüÄÖÜ]+)\s*(\d{4})$", text)
+    m = re.match(r"(\d{1,2})[.,]?\s*([A-Za-zäöüÄÖÜ]+)\s*(\d{4})$", text)  # "30, September 2025": OCR-Komma
     if m and m.group(2).lower() in MONATE:
         try:
             return datetime(int(m.group(3)), MONATE[m.group(2).lower()], int(m.group(1))).strftime("%Y-%m-%d")
@@ -507,9 +507,31 @@ def hat_textebene(pfad: Path, min_zeichen: int = 30) -> bool:
         return False
 
 
+def einzelzeichen_anteil(text: str) -> float:
+    """Anteil der Zeilen mit höchstens 2 Zeichen (bei mehr als 30 Zeilen). Normaler Text liegt weit unter 0,3."""
+    zeilen = [z for z in text.split("\n") if z != ""]
+    if len(zeilen) <= 30:
+        return 0.0
+    return sum(len(z) <= 2 for z in zeilen) / len(zeilen)
+
+
+def einzelzeichen_reparieren(text: str) -> tuple[str, bool]:
+    """Manche Textebenen liefern jedes Zeichen in einer eigenen Zeile ("D", "i", "e", " ", …).
+    Zusammensetzen: Zeilen aneinanderhängen, leere Zeilen werden Zeilenumbrüche. Gibt (Text, repariert) zurück."""
+    if einzelzeichen_anteil(text) <= 0.5:
+        return text, False
+    return "".join("\n" if z == "" else z for z in text.split("\n")), True
+
+
+def wortabstand_ok(text: str) -> bool:
+    """Zusammengesetzter Text ohne Leerzeichen ('HerrnNico PisoneHelenenstr.') ist für Regeln und Schwärzen unzuverlässig."""
+    return len(text) < 200 or text.count(" ") / len(text) >= 0.05
+
+
 def pdf_text(pfad: Path) -> str:
     reader = PdfReader(str(pfad))
-    return text_normalisieren("\n".join((s.extract_text() or "") for s in reader.pages))
+    roh = "\n".join((s.extract_text() or "") for s in reader.pages)
+    return text_normalisieren(einzelzeichen_reparieren(roh)[0])
 
 
 def ocr(quelle: Path, ziel: Path, cfg: dict) -> str:
@@ -589,6 +611,17 @@ def erstes(muster_liste: list[str], text: str, flags=re.IGNORECASE) -> re.Match 
         if m:
             return m
     return None
+
+
+def _kopf_position(text: str, cfg: dict) -> int | None:
+    """Stelle der ersten Bescheid-Überschrift (Kopf-Muster einer Kategorie) – oder None."""
+    erste = None
+    for kat in cfg["kategorien"]:
+        for muster in kat.get("kopf", []):
+            m = re.search(muster, text, re.IGNORECASE | re.MULTILINE)
+            if m and (erste is None or m.start() < erste):
+                erste = m.start()
+    return erste
 
 
 def kategorie_bestimmen(text: str, cfg: dict) -> str | None:
@@ -717,17 +750,41 @@ def tabelle_lesen(text: str, cfg: dict) -> list[tuple[str, str, str]]:
         if z not in gesehen:
             gesehen.add(z)
             zeilen.append(z)
-    return zeilen
+    return zeilen or _tabelle_spaltenweise(text)
+
+
+def _tabelle_spaltenweise(text: str) -> list[tuple[str, str, str]]:
+    """Zerlegte Tabelle: erst alle 'von'-Daten, dann alle 'bis'-Daten, dann 'mtl. Betrag' und die Beträge,
+    je Wert eine Zeile ("07. 08. 2023", "31. 12, 2023", "1. 949,00" – OCR-Leerzeichen und -Komma werden bereinigt)."""
+    zl = [z.strip() for z in text.split("\n") if z.strip()]
+    for k, z in enumerate(zl):
+        if not re.fullmatch(r"mtl\.?\s*Betrag", z, re.IGNORECASE):
+            continue
+        daten, i = [], k - 1
+        while i >= 0 and re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", re.sub(r"\s+", "", zl[i]).replace(",", ".")):
+            daten.insert(0, datum_iso(re.sub(r"\s+", "", zl[i]).replace(",", ".")))
+            i -= 1
+        betraege, i = [], k + 1
+        while i < len(zl) and re.fullmatch(r"\d{1,3}(?:\.\d{3})*,\d{2}", re.sub(r"\s+", "", zl[i])):
+            betraege.append(re.sub(r"\s+", "", zl[i]))
+            i += 1
+        n = len(betraege)
+        if n and len(daten) >= 2 * n and all(daten[-2 * n:]):
+            von, bis = daten[-2 * n:-n], daten[-n:]
+            if all(v <= b for v, b in zip(von, bis)):
+                return list(zip(von, bis, betraege))
+    return []
 
 
 def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
     m_cfg = cfg["muster"]
     e = Ergebnis()
     hinweise = []
-    # Scan-Text kaputt: fast jedes Zeichen steht in einer eigenen Zeile (OCR-Fehler)
-    nichtleer = [z for z in text.splitlines() if z.strip()]
-    if len(nichtleer) > 30 and sum(len(z.strip()) <= 2 for z in nichtleer) > 0.5 * len(nichtleer):
-        hinweise.append("Scan-Text unbrauchbar (fast jedes Zeichen in eigener Zeile) – OCR wiederholen oder Scan prüfen")
+    # Textebene zerlegt: jedes Zeichen in einer eigenen Zeile -> zusammensetzen
+    text, repariert = einzelzeichen_reparieren(text)
+    if repariert:
+        hinweise.append("Text war Zeichen für Zeichen zerlegt und wurde zusammengesetzt – bitte alle Angaben prüfen"
+                        + ("" if wortabstand_ok(text) else " (Wörter teils zusammengeklebt: Scan-Text unbrauchbar)"))
 
     # Kundennummer: beschriftete Fundstellen zählen 3-fach, Barcode/Freitext 1-fach; bei Gleichstand -> unsicher
     kandidaten = [(re.sub(r"\s", "", m.group(1)).upper(), 3)
@@ -744,9 +801,25 @@ def regeln_anwenden(text: str, cfg: dict) -> Ergebnis:
         hinweise.append("Kundennummer nicht eindeutig: " + ", ".join(verschiedene))
 
     # Bescheiddatum: 'Datum: 03. Dezember 2025' (3-fach) vor 'Bescheid vom 03.12.2025' (1-fach, mehrfach im Dokument)
-    kandidaten = [(d, 3) for m in alle(m_cfg.get("bescheiddatum", []), text) if (d := datum_iso(m.group(1))) and _plausibel_datum(d)]
+    kandidaten, stellen = [], {}  # stellen: Datum -> Positionen der beschrifteten Fundstellen
+    for m in alle(m_cfg.get("bescheiddatum", []), text):
+        if (d := datum_iso(m.group(1))) and _plausibel_datum(d):
+            kandidaten.append((d, 3))
+            stellen.setdefault(d, []).append(m.start())
     kandidaten += [(d, 1) for m in alle(m_cfg.get("bescheiddatum_fallback", []), text) if (d := datum_iso(m.group(1))) and _plausibel_datum(d)]
     wert, eindeutig = mehrheit(kandidaten)
+    if wert and not eindeutig:
+        # Anschreiben + Bescheid in einem Scan: gilt das Datum, das unmittelbar vor der Bescheid-Überschrift steht
+        punkte: dict[str, int] = {}
+        for d, g in kandidaten:
+            punkte[d] = punkte.get(d, 0) + g
+        spitze = [d for d, p_ in punkte.items() if p_ == max(punkte.values())]
+        kopf_pos = _kopf_position(text, cfg)
+        if kopf_pos is not None:
+            davor = {d: max((x for x in stellen.get(d, []) if x < kopf_pos), default=-1) for d in spitze}
+            beste = max(davor.values())
+            if beste >= 0 and list(davor.values()).count(beste) == 1:
+                wert, eindeutig = next(d for d, x in davor.items() if x == beste), True
     if wert and eindeutig:
         e.bescheiddatum = wert
     elif wert:

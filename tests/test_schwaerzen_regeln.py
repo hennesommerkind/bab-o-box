@@ -128,5 +128,39 @@ class Hausanschriften(unittest.TestCase):
         self.assertNotIn("Anderer Weg", e.text)
 
 
+class EinzelzeichenText(unittest.TestCase):
+    def test_zerlegter_text_wird_zusammengesetzt_und_name_ersetzt(self):
+        inhalt = "Kundennummer: 123A456789 Guten Tag Herrn Musterperson Beispielweg 7 12345 Testhausen " * 2
+        e = laufe("\n".join(list(inhalt)))
+        self.assertNotIn("Musterperson", e.text)
+        self.assertNotIn("123A456789", e.text)
+
+    def test_text_ohne_wortabstaende_wird_gewarnt(self):
+        inhalt = "HerrnMusterpersonBeispielweg7ImAuftragdesTeams" * 8
+        e = laufe("\n".join(list(inhalt)))
+        self.assertTrue(any("NICHT weitergeben" in w for w in e.warnungen))
+
+
+class AnredeNamen(unittest.TestCase):
+    def test_kurzer_nachname_nach_anrede(self):
+        e = laufe("Sehr geehrte Frau Ho,\nauf den am 24.02.2026 gestellten Antrag")
+        self.assertNotRegex(e.text, r"\bHo\b")
+
+    def test_vorname_neben_pseudonym_wird_ersetzt(self):
+        e = laufe("Guten Tag Abolfazi Birkeulme,\nIhr Antrag")
+        self.assertNotIn("Abolfazi", e.text)
+        self.assertIn("Birkeulme", e.text)
+
+    def test_name_mit_vornamen_nach_guten_tag(self):
+        e = laufe("Guten Tag Anne Beispielname,\nAgentur für Arbeit")
+        self.assertNotIn("Beispielname", e.text)
+        self.assertNotIn("Anne", e.text)
+
+    def test_allgemeine_anrede_bleibt(self):
+        e = laufe("Sehr geehrte Damen und Herren,\nGuten Tag,\nvielen Dank")
+        self.assertIn("Sehr geehrte Damen und Herren,", e.text)
+        self.assertIn("Guten Tag,", e.text)
+
+
 if __name__ == "__main__":
     unittest.main()

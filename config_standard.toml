@@ -75,7 +75,7 @@ kundennummer_frei = [
 # "Datum: 03. Dezember 2025" (zählt 3-fach)
 # (?!\d) verhindert, dass OCR-Fehler wie "20226" als Jahr 2022 gelesen werden.
 bescheiddatum = [
-  'Datum\s*:?\s*(\d{1,2}\.?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4}(?!\d))',
+  'Datum\s*:?\s*(\d{1,2}[.,]?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4}(?!\d))',  # "30, September 2025": OCR-Komma statt Punkt
   'Datum\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
   # "Berechnungsbogen BAB zum Bescheid vom …" nennt das Datum des eigenen Bescheids
   'Berechnungsbogen\s+BAB\s+zum\s+Bescheid\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
@@ -84,6 +84,8 @@ bescheiddatum = [
 # "Änderungsbescheid zum Bescheid vom 30.07.2025" nennt den ALTEN Bescheid → ausgenommen (?<!zum ).
 bescheiddatum_fallback = [
   '(?<!zum )Bescheid\s+vom\s+(\d{1,2}\.\d{1,2}\.\d{4}(?!\d))',
+  # "als Bevollmächtigte erhalten Sie den Bescheid vom 24. März 2026" (Anschreiben zum Bescheid)
+  '(?<!zum )Bescheid\s+vom\s+(\d{1,2}[.,]?\s*(?:Januar|Februar|M[äa]e?rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*\d{4}(?!\d))',
 ]
 # Name der/des Auszubildenden – Gruppe 1. Wird geprüft (nur Buchstaben, 2–5 Wörter, keine Sperrworte).
 # NICHT "Guten Tag …" verwenden: bei Abtretung ist das Kolping als Empfänger.
@@ -160,8 +162,19 @@ kopf    = ['Aufhebungs-?\s*(?:und\s+Erstattungs)?bescheid', 'Erstattungsbescheid
 hinweis = ['Erstattungsforderung', 'zu\s+erstatten(?:de|den)?\s+Betrag']
 
 [[kategorien]]
+name    = 'Widerspruch'
+# Schreiben im Widerspruchsverfahren (Rechtsbehelfsstelle, Stellungnahme, eigener Widerspruch) – kein Bescheid.
+kopf    = ['Widerspruchsverfahren', 'Widerspruch\s+gegen\s+den\s+(?:[ÄA]e?nderungs|Aufhebungs|Erstattungs)?[Bb]escheid',
+           '(?m)^\s*Rechtsbehelfsstelle\s*$', 'Stellungnahme\s+zu\s+Ihrem\s+Schreiben']
+
+[[kategorien]]
+name    = 'Berechnungsbogen'
+# Nur der Berechnungsbogen ohne Bescheid (Anlage allein). Nur Hinweis: in Bescheiden steht er hinten und verliert gegen die Überschrift.
+hinweis = ['^\s*Berechnungsbogen\s+BAB']
+
+[[kategorien]]
 name    = 'Änderung'
-kopf    = ['[ÄA]e?nderungsbescheid']
+kopf    = ['[ÄA]e?nderungsbescheid', 'Abhilfebescheid']
 hinweis = ['[ÄA]e?nderung\s+der\s+Bewilligung', 'neu\s+berechnet']
 
 [[kategorien]]
@@ -376,6 +389,12 @@ dokumentart = 'BAB Änderungsbescheid'
 status      = 'noch zu prüfen'
 
 [ninox.zuordnung."Anhörung"]
+aktion = 'manuell'
+
+[ninox.zuordnung.Widerspruch]
+aktion = 'manuell'
+
+[ninox.zuordnung.Berechnungsbogen]
 aktion = 'manuell'
 
 [ninox.zuordnung.Mitwirkung]
